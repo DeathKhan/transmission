@@ -3,6 +3,11 @@
 // or any future license endorsed by Mnemosyne LLC.
 // License text can be found in the licenses/ folder.
 
+// _AppIndicatorClass::{fallback,unfallback} use deprecated GtkStatusIcon
+#undef GTK_DISABLE_DEPRECATED
+// We're using deprecated Gtk::StatusItem ourselves as well
+#undef GTKMM_DISABLE_DEPRECATED
+
 #include "SystemTrayIcon.h"
 
 #include "Actions.h"
@@ -44,7 +49,7 @@
 #endif
 
 using namespace std::literals;
-using namespace tr::Values;
+using namespace libtransmission::Values;
 
 namespace
 {
@@ -73,7 +78,7 @@ public:
     void refresh();
 
 private:
-    static void activated();
+    void activated();
     void popup(guint button, guint when);
 
     [[nodiscard]] std::string make_tooltip_text() const;
@@ -190,20 +195,35 @@ SystemTrayIcon::Impl::Impl([[maybe_unused]] Gtk::Window& main_window, Glib::RefP
     app_indicator_set_title(indicator_, Glib::get_application_name().c_str());
 #elif defined(TR_SYS_TRAY_IMPL_STATUS_ICON)
     icon_ = Gtk::StatusIcon::create(icon_name);
-    icon_->signal_activate().connect(&Impl::activated);
+    icon_->signal_activate().connect(sigc::mem_fun(*this, &Impl::activated));
     icon_->signal_popup_menu().connect(sigc::mem_fun(*this, &Impl::popup));
 #endif
 }
 
 std::string SystemTrayIcon::Impl::make_tooltip_text() const
 {
-    auto const* const session = core_->get_session();
+    if (auto* const session = core_->get_session(); session != nullptr)
+    {
+        return fmt::format(
+            fmt::runtime(_("{upload_speed} ▲ {download_speed} ▼")),
+            fmt::arg("upload_speed", Speed{ tr_sessionGetRawSpeed_KBps(session, TR_UP), Speed::Units::KByps }.to_string()),
+            fmt::arg("download_speed", Speed{ tr_sessionGetRawSpeed_KBps(session, TR_DOWN), Speed::Units::KByps }.to_string()));
+    }
+
+    auto up = Speed{};
+    auto down = Speed{};
+    auto const model = core_->get_model();
+    for (auto i = 0U, n = model->get_n_items(); i < n; ++i)
+    {
+        if (auto const torrent = gtr_ptr_dynamic_cast<Torrent>(model->get_object(i)))
+        {
+            up += torrent->get_speed_up();
+            down += torrent->get_speed_down();
+        }
+    }
+
     return fmt::format(
         fmt::runtime(_("{upload_speed} ▲ {download_speed} ▼")),
-        fmt::arg(
-            "upload_speed",
-            Speed{ tr_sessionGetRawSpeed_KBps(session, tr_direction::Up), Speed::Units::KByps }.to_string()),
-        fmt::arg(
-            "download_speed",
-            Speed{ tr_sessionGetRawSpeed_KBps(session, tr_direction::Down), Speed::Units::KByps }.to_string()));
+        fmt::arg("upload_speed", up.to_string()),
+        fmt::arg("download_speed", down.to_string()));
 }

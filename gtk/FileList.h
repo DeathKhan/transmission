@@ -6,6 +6,7 @@
 #pragma once
 
 #include <libtransmission/transmission.h>
+#include <libtransmission/variant.h>
 
 #include <glibmm/refptr.h>
 #include <glibmm/ustring.h>
@@ -33,6 +34,7 @@ public:
 
     void clear();
     void set_torrent(tr_torrent_id_t torrent_id);
+    void load_from_rpc(tr_torrent_id_t torrent_id, tr_variant::Vector const& files, tr_variant::Vector const* file_stats);
 
 private:
     class Impl;

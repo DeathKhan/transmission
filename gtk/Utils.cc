@@ -1011,5 +1011,12 @@ void gtr_save_recent_dir(std::string const& pref, Glib::RefPtr<Session> const& c
         gtr_pref_string_set(tr_quark_new(key), d);
     }
 
-    gtr_pref_save(core->get_session());
+    if (core->get_session() != nullptr)
+    {
+        gtr_pref_save(core->get_session());
+    }
+    else
+    {
+        gtr_pref_save_client_only();
+    }
 }

@@ -99,9 +99,24 @@ void OptionsDialog::Impl::removeOldTorrent()
 
 void OptionsDialog::Impl::addResponseCB(int response)
 {
-    if (tor_ != nullptr)
+    if (response == TR_GTK_RESPONSE_TYPE(ACCEPT))
     {
-        if (response == TR_GTK_RESPONSE_TYPE(ACCEPT))
+        tr_ctorSetPaused(ctor_.get(), TR_FORCE, !run_check_->get_active());
+        tr_ctorSetDownloadDir(ctor_.get(), TR_FORCE, downloadDir_.c_str());
+
+        if (core_->is_remote())
+        {
+            core_->add_torrent_from_ctor(
+                ctor_.get(),
+                run_check_->get_active(),
+                trash_check_->get_active(),
+                static_cast<tr_priority_t>(gtr_combo_box_get_active_enum(*priority_combo_)));
+            gtr_save_recent_dir("download", core_, downloadDir_);
+            dialog_.close();
+            return;
+        }
+
+        if (tor_ != nullptr)
         {
             tr_torrentSetPriority(tor_, static_cast<tr_priority_t>(gtr_combo_box_get_active_enum(*priority_combo_)));
 
@@ -129,6 +144,13 @@ void OptionsDialog::Impl::updateTorrent()
 {
     bool const isLocalFile = tr_ctorGetSourceFile(ctor_.get()).has_value();
     trash_check_->set_sensitive(isLocalFile);
+
+    if (core_->is_remote())
+    {
+        file_list_->clear();
+        file_list_->set_sensitive(false);
+        return;
+    }
 
     if (tor_ == nullptr)
     {
@@ -170,6 +192,12 @@ void OptionsDialog::Impl::sourceChanged(PathButton* b)
         tr_ctorSetDownloadDir(ctor_.get(), TR_FORCE, downloadDir_);
         tr_ctorSetPaused(ctor_.get(), TR_FORCE, true);
         tr_ctorSetDeleteSource(ctor_.get(), false);
+
+        if (core_->is_remote())
+        {
+            updateTorrent();
+            return;
+        }
 
         tr_torrent* duplicate_of = nullptr;
         if (tr_torrent* const torrent = tr_torrentNew(ctor_.get(), &duplicate_of); torrent != nullptr)

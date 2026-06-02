@@ -10,7 +10,10 @@
 #include <gtkmm/applicationwindow.h>
 #include <gtkmm/builder.h>
 
+#include <libtransmission/transmission.h>
+
 #include <memory>
+#include <unordered_set>
 
 class Session;
 class Torrent;
@@ -40,6 +43,7 @@ public:
 
     void select_all();
     void unselect_all();
+    void select_torrents_by_id(std::unordered_set<tr_torrent_id_t> const& ids);
 
     void set_busy(bool isBusy);
     void refresh();

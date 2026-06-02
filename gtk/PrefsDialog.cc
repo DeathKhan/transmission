@@ -9,6 +9,7 @@
 #include "GtkCompat.h"
 #include "PathButton.h"
 #include "Prefs.h"
+#include "RemotePrefs.h"
 #include "Session.h"
 #include "SystemTrayIcon.h"
 #include "Utils.h"
@@ -29,6 +30,8 @@
 #include <gtkmm/combobox.h>
 #include <gtkmm/editable.h>
 #include <gtkmm/entry.h>
+#include <gtkmm/frame.h>
+#include <gtkmm/grid.h>
 #include <gtkmm/label.h>
 #include <gtkmm/liststore.h>
 #include <gtkmm/spinbutton.h>
@@ -50,9 +53,8 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <type_traits>
 
-using namespace tr::Values;
+using namespace libtransmission::Values;
 
 /**
 ***
@@ -96,6 +98,11 @@ void PrefsDialog::Impl::response_cb(int response)
 namespace
 {
 
+using transmission::client::gtk::apply_session_mode_prefs;
+using transmission::client::gtk::get_runtime_session_mode;
+using transmission::client::gtk::get_session_mode;
+using transmission::client::gtk::SessionMode;
+
 class PageBase : public Gtk::Box
 {
 public:
@@ -107,27 +114,14 @@ public:
     ~PageBase() override;
 
     Gtk::CheckButton* init_check_button(Glib::ustring const& name, tr_quark key);
+    Gtk::SpinButton* init_spin_button(Glib::ustring const& name, tr_quark key, int low, int high, int step);
+    Gtk::SpinButton* init_spin_button_double(Glib::ustring const& name, tr_quark key, double low, double high, double step);
     Gtk::Entry* init_entry(Glib::ustring const& name, tr_quark key);
     Gtk::TextView* init_text_view(Glib::ustring const& name, tr_quark key);
     PathButton* init_chooser_button(Glib::ustring const& name, tr_quark key);
     Gtk::ComboBox* init_encryption_combo(Glib::ustring const& name, tr_quark key);
     Gtk::ComboBox* init_time_combo(Glib::ustring const& name, tr_quark key);
     Gtk::ComboBox* init_week_combo(Glib::ustring const& name, tr_quark key);
-
-    template<typename T>
-    Gtk::SpinButton* init_spin_button(Glib::ustring const& name, tr_quark const key, T const low, T const high, T const step)
-    {
-        auto* button = get_widget<Gtk::SpinButton>(name);
-        button->set_adjustment(
-            Gtk::Adjustment::create(
-                static_cast<double>(gtr_pref_get<T>(key).value_or(T{})),
-                static_cast<double>(low),
-                static_cast<double>(high),
-                static_cast<double>(step)));
-        button->set_digits(std::is_floating_point_v<T> ? 2 : 0);
-        button->signal_value_changed().connect([this, button, key]() { spun_cb<T>(*button, key); });
-        return button;
-    }
 
     template<typename T>
     T* get_widget(Glib::ustring const& name) const
@@ -148,44 +142,8 @@ public:
     }
 
 private:
-    template<typename T>
-    bool spun_cb_idle(Gtk::SpinButton const& spin, tr_quark const key)
-    {
-        // How long the spin button must be idle before we push the value to core_.
-        // Prevents flooding the core with intermediate values while the user spins.
-        static constexpr auto SpinIdleThresholdSec = 0.33;
-
-        auto const last_change_it = spin_timers_.find(key);
-        g_return_val_if_fail(last_change_it != spin_timers_.end(), false);
-
-        // if the user is still making changes, then do nothing yet
-        if (last_change_it->second.first->elapsed() < SpinIdleThresholdSec)
-        {
-            return true;
-        }
-
-        // update the core
-        core_->set_pref(key, static_cast<T>(spin.get_value()));
-
-        // cleanup
-        spin_timers_.erase(last_change_it);
-        return false;
-    }
-
-    template<typename T>
-    void spun_cb(Gtk::SpinButton& w, tr_quark const key)
-    {
-        // user may be spinning through many values, so let's hold off
-        // for a moment to keep from flooding the core with changes
-        auto last_change_it = spin_timers_.find(key);
-        if (last_change_it == spin_timers_.end())
-        {
-            auto timeout_tag = Glib::signal_timeout().connect_seconds([this, &w, key]() { return spun_cb_idle<T>(w, key); }, 1);
-            last_change_it = spin_timers_.emplace(key, std::pair(std::make_unique<Glib::Timer>(), timeout_tag)).first;
-        }
-
-        last_change_it->second.first->start();
-    }
+    bool spun_cb_idle(Gtk::SpinButton& spin, tr_quark key, bool isDouble);
+    void spun_cb(Gtk::SpinButton& w, tr_quark key, bool isDouble);
 
     void entry_changed_cb(Gtk::Entry& w, tr_quark key);
 
@@ -222,6 +180,71 @@ Gtk::CheckButton* PageBase::init_check_button(Glib::ustring const& name, tr_quar
     auto* button = get_widget<Gtk::CheckButton>(name);
     button->set_active(gtr_pref_flag_get(key));
     button->signal_toggled().connect([this, button, key]() { core_->set_pref(key, button->get_active()); });
+    return button;
+}
+
+bool PageBase::spun_cb_idle(Gtk::SpinButton& spin, tr_quark const key, bool isDouble)
+{
+    auto const last_change_it = spin_timers_.find(key);
+    g_assert(last_change_it != spin_timers_.end());
+
+    /* has the user stopped making changes? */
+    if (last_change_it->second.first->elapsed() < 0.33)
+    {
+        return true;
+    }
+
+    /* update the core */
+    if (isDouble)
+    {
+        core_->set_pref(key, spin.get_value());
+    }
+    else
+    {
+        core_->set_pref(key, spin.get_value_as_int());
+    }
+
+    /* cleanup */
+    spin_timers_.erase(last_change_it);
+    return false;
+}
+
+void PageBase::spun_cb(Gtk::SpinButton& w, tr_quark const key, bool isDouble)
+{
+    /* user may be spinning through many values, so let's hold off
+       for a moment to keep from flooding the core with changes */
+    auto last_change_it = spin_timers_.find(key);
+    if (last_change_it == spin_timers_.end())
+    {
+        auto timeout_tag = Glib::signal_timeout().connect_seconds(
+            [this, &w, key, isDouble]() { return spun_cb_idle(w, key, isDouble); },
+            1);
+        last_change_it = spin_timers_.emplace(key, std::pair(std::make_unique<Glib::Timer>(), timeout_tag)).first;
+    }
+
+    last_change_it->second.first->start();
+}
+
+Gtk::SpinButton* PageBase::init_spin_button(Glib::ustring const& name, tr_quark const key, int low, int high, int step)
+{
+    auto* button = get_widget<Gtk::SpinButton>(name);
+    button->set_adjustment(Gtk::Adjustment::create(gtr_pref_int_get(key), low, high, step));
+    button->set_digits(0);
+    button->signal_value_changed().connect([this, button, key]() { spun_cb(*button, key, false); });
+    return button;
+}
+
+Gtk::SpinButton* PageBase::init_spin_button_double(
+    Glib::ustring const& name,
+    tr_quark const key,
+    double low,
+    double high,
+    double step)
+{
+    auto* button = get_widget<Gtk::SpinButton>(name);
+    button->set_adjustment(Gtk::Adjustment::create(gtr_pref_double_get(key), low, high, step));
+    button->set_digits(2);
+    button->signal_value_changed().connect([this, button, key]() { spun_cb(*button, key, true); });
     return button;
 }
 
@@ -339,7 +362,7 @@ Gtk::ComboBox* PageBase::init_time_combo(Glib::ustring const& name, tr_quark con
     auto* r = Gtk::make_managed<Gtk::CellRendererText>();
     combo->pack_start(*r, true);
     combo->add_attribute(r->property_text(), time_cols.title);
-    combo->set_active(gtr_pref_int_get<int>(key) / 15);
+    combo->set_active(gtr_pref_int_get(key) / 15);
     combo->signal_changed().connect(
         [this, combo, key]()
         {
@@ -376,7 +399,7 @@ Gtk::ComboBox* PageBase::init_week_combo(Glib::ustring const& name, tr_quark con
             { get_weekday_string(Glib::Date::Weekday::SATURDAY), TR_SCHED_SAT },
             { get_weekday_string(Glib::Date::Weekday::SUNDAY), TR_SCHED_SUN },
         });
-    gtr_combo_box_set_active_enum(*combo, gtr_pref_int_get<int>(key));
+    gtr_combo_box_set_active_enum(*combo, gtr_pref_int_get(key));
     combo->signal_changed().connect([this, combo, key]() { onIntComboChanged(*combo, key); });
     return combo;
 }
@@ -410,8 +433,14 @@ void DownloadingPage::on_core_prefs_changed(tr_quark const key)
 {
     if (key == TR_KEY_download_dir)
     {
-        std::string const download_dir = tr_sessionGetDownloadDir(core_->get_session());
-        freespace_label_->set_dir(download_dir);
+        if (auto* const session = core_->get_session(); session != nullptr)
+        {
+            freespace_label_->set_dir(tr_sessionGetDownloadDir(session));
+        }
+        else
+        {
+            freespace_label_->set_dir(gtr_pref_string_get(TR_KEY_download_dir));
+        }
     }
 }
 
@@ -436,18 +465,8 @@ DownloadingPage::DownloadingPage(
     init_check_button("start_on_add_check", TR_KEY_start_added_torrents);
     init_check_button("trash_on_add_check", TR_KEY_trash_original_torrent_files);
     init_chooser_button("download_dir_chooser", TR_KEY_download_dir);
-    init_spin_button<uint16_t>(
-        "max_active_downloads_spin",
-        TR_KEY_download_queue_size,
-        0,
-        std::numeric_limits<uint16_t>::max(),
-        1);
-    init_spin_button<uint16_t>(
-        "max_inactive_time_spin",
-        TR_KEY_queue_stalled_minutes,
-        1,
-        std::numeric_limits<uint16_t>::max(),
-        15);
+    init_spin_button("max_active_downloads_spin", TR_KEY_download_queue_size, 0, std::numeric_limits<int>::max(), 1);
+    init_spin_button("max_inactive_time_spin", TR_KEY_queue_stalled_minutes, 1, std::numeric_limits<int>::max(), 15);
     init_check_button("append_suffix_to_incomplete_check", TR_KEY_rename_partial_files);
     init_check_button("incomplete_dir_check", TR_KEY_incomplete_dir_enabled);
     init_chooser_button("incomplete_dir_chooser", TR_KEY_incomplete_dir);
@@ -478,10 +497,10 @@ SeedingPage::SeedingPage(
     Glib::RefPtr<Session> const& core)
     : PageBase(cast_item, builder, core)
 {
-    init_check_button("stop_seeding_ratio_check", TR_KEY_seed_ratio_limited);
-    init_spin_button<double>("stop_seeding_ratio_spin", TR_KEY_seed_ratio_limit, 0, 1000, 0.05);
+    init_check_button("stop_seeding_ratio_check", TR_KEY_ratio_limit_enabled);
+    init_spin_button_double("stop_seeding_ratio_spin", TR_KEY_ratio_limit, 0, 1000, 0.05);
     init_check_button("stop_seeding_timeout_check", TR_KEY_idle_seeding_limit_enabled);
-    init_spin_button<uint16_t>("stop_seeding_timeout_spin", TR_KEY_idle_seeding_limit, 1, 40320, 5);
+    init_spin_button("stop_seeding_timeout_spin", TR_KEY_idle_seeding_limit, 1, 40320, 5);
     init_check_button("seeding_done_script_check", TR_KEY_script_torrent_done_seeding_enabled);
     init_chooser_button("seeding_done_script_chooser", TR_KEY_script_torrent_done_seeding_filename);
 }
@@ -558,7 +577,21 @@ private:
 
 void PrivacyPage::updateBlocklistText()
 {
-    auto const n = tr_blocklistGetRuleCount(core_->get_session());
+    int const n = [&]() -> int
+    {
+        if (core_->is_remote())
+        {
+            return core_->get_remote_blocklist_size();
+        }
+
+        if (auto* const session = core_->get_session(); session != nullptr)
+        {
+            return tr_blocklistGetRuleCount(session);
+        }
+
+        return 0;
+    }();
+
     auto const msg = fmt::format(
         fmt::runtime(ngettext("Blocklist has {count:L} entry", "Blocklist has {count:L} entries", n)),
         fmt::arg("count", n));
@@ -620,8 +653,14 @@ PrivacyPage::PrivacyPage(
     blocklist_url_entry->signal_changed().connect([this, blocklist_url_entry]()
                                                   { on_blocklist_url_changed(blocklist_url_entry); });
     on_blocklist_url_changed(blocklist_url_entry);
-
-    init_check_button("blocklist_autoupdate_check", TR_KEY_blocklist_updates_enabled);
+    if (!core_->is_remote())
+    {
+        init_check_button("blocklist_autoupdate_check", TR_KEY_blocklist_updates_enabled);
+    }
+    else
+    {
+        get_widget<Gtk::Widget>("blocklist_autoupdate_check")->set_sensitive(false);
+    }
 
     updateBlocklistTag_ = core_->signal_blocklist_updated().connect(sigc::mem_fun(*this, &PrivacyPage::onBlocklistUpdated));
 }
@@ -654,28 +693,43 @@ public:
     ~RemotePage() override = default;
 
 private:
+    void build_remote_client_panel();
+    void build_none_panel();
+    void detach_host_frame_into(Gtk::Box& host_panel);
+    void on_session_mode_changed();
+    void update_mode_panels();
+    void refresh_remote_auth_sensitivity();
+
     void refreshWhitelist();
     void onAddressEdited(Glib::ustring const& path, Glib::ustring const& address);
     void onAddWhitelistClicked();
     void onRemoveWhitelistClicked();
     void refreshRPCSensitivity();
 
-    static void onLaunchClutchCB();
+    void onLaunchClutchCB();
 
     static Glib::RefPtr<Gtk::ListStore> whitelist_tree_model_new(std::string const& whitelist);
 
 private:
     Glib::RefPtr<Session> core_;
 
+    Gtk::ComboBox* mode_combo_ = nullptr;
+    Gtk::Label* restart_note_ = nullptr;
+    Gtk::Box* host_panel_ = nullptr;
+    Gtk::Box* remote_panel_ = nullptr;
+    Gtk::Box* none_panel_ = nullptr;
+
     Gtk::TreeView* view_;
     Gtk::Button* remove_button_;
     Gtk::CheckButton* rpc_tb_;
     Gtk::CheckButton* auth_tb_;
     Gtk::CheckButton* whitelist_tb_;
+    Gtk::CheckButton* remote_auth_tb_ = nullptr;
 
     Glib::RefPtr<Gtk::ListStore> store_;
     std::vector<Gtk::Widget*> auth_widgets_;
     std::vector<Gtk::Widget*> whitelist_widgets_;
+    std::vector<Gtk::Widget*> remote_auth_widgets_;
 };
 
 RemotePage::WhitelistModelColumns const RemotePage::whitelist_cols;
@@ -775,23 +829,254 @@ void RemotePage::refreshRPCSensitivity()
 
 void RemotePage::onLaunchClutchCB()
 {
-    gtr_open_uri(fmt::format("http://localhost:{}/", gtr_pref_int_get<uint16_t>(TR_KEY_rpc_port)));
+    if (core_->is_remote())
+    {
+        auto const use_https = gtr_pref_flag_get(TR_KEY_remote_session_https);
+        auto const host = gtr_pref_string_get(TR_KEY_remote_session_host);
+        auto const port = gtr_pref_int_get(TR_KEY_remote_session_port);
+        auto path = gtr_pref_string_get(TR_KEY_remote_session_url_base_path);
+        if (path.empty())
+        {
+            path = "/transmission/";
+        }
+        if (path.back() != '/')
+        {
+            path.push_back('/');
+        }
+
+        gtr_open_uri(fmt::format("{}://{}:{}{}web/", use_https ? "https" : "http", host, port, path));
+    }
+    else
+    {
+        gtr_open_uri(fmt::format("http://localhost:{}/", gtr_pref_int_get(TR_KEY_rpc_port)));
+    }
+}
+
+void RemotePage::detach_host_frame_into(Gtk::Box& host_panel)
+{
+#if GTKMM_CHECK_VERSION(4, 0, 0)
+    for (auto* child = get_first_child(); child != nullptr;)
+    {
+        auto* const next = child->get_next_sibling();
+        if (auto* const frame = dynamic_cast<Gtk::Frame*>(child))
+        {
+            remove(*frame);
+            host_panel.append(*frame);
+            return;
+        }
+
+        child = next;
+    }
+#else
+    for (auto* const child : get_children())
+    {
+        if (auto* const frame = dynamic_cast<Gtk::Frame*>(child))
+        {
+            remove(*frame);
+            host_panel.pack_start(*frame, Gtk::PACK_EXPAND_WIDGET);
+            return;
+        }
+    }
+#endif
+}
+
+void RemotePage::build_none_panel()
+{
+    auto* const label = Gtk::make_managed<Gtk::Label>(
+        _("Torrents run locally in an embedded session. Remote RPC access is disabled."));
+    label->set_wrap(true);
+    label->set_halign(Gtk::Align::START);
+#if GTKMM_CHECK_VERSION(4, 0, 0)
+    label->set_wrap_mode(Pango::WrapMode::WORD);
+#endif
+    none_panel_->append(*label);
+}
+
+void RemotePage::build_remote_client_panel()
+{
+    auto* const frame = Gtk::make_managed<Gtk::Frame>();
+    frame->set_label(_("Connect to daemon"));
+
+    auto* const grid = Gtk::make_managed<Gtk::Grid>();
+    grid->set_row_spacing(6);
+    grid->set_column_spacing(12);
+    frame->set_child(*grid);
+
+    int row = 0;
+
+    auto* const host_label = Gtk::make_managed<Gtk::Label>(_("_Host:"), true);
+    host_label->set_halign(Gtk::Align::START);
+    auto* const host_entry = Gtk::make_managed<Gtk::Entry>();
+    host_entry->set_hexpand(true);
+    host_entry->set_text(gtr_pref_string_get(TR_KEY_remote_session_host));
+    host_entry->signal_changed().connect([this, host_entry]()
+                                         { core_->set_pref(TR_KEY_remote_session_host, host_entry->get_text()); });
+    grid->attach(*host_label, 0, row, 1, 1);
+    grid->attach(*host_entry, 1, row++, 1, 1);
+
+    auto* const port_label = Gtk::make_managed<Gtk::Label>(_("_Port:"), true);
+    port_label->set_halign(Gtk::Align::START);
+    auto const port_adj = Gtk::Adjustment::create(gtr_pref_int_get(TR_KEY_remote_session_port), 1, 65535, 1);
+    auto* const port_spin = Gtk::make_managed<Gtk::SpinButton>(port_adj);
+    port_spin->set_hexpand(true);
+    port_spin->signal_value_changed().connect([this, port_spin]()
+                                              { core_->set_pref(TR_KEY_remote_session_port, port_spin->get_value_as_int()); });
+    grid->attach(*port_label, 0, row, 1, 1);
+    grid->attach(*port_spin, 1, row++, 1, 1);
+
+    auto* const path_label = Gtk::make_managed<Gtk::Label>(_("_Path:"), true);
+    path_label->set_halign(Gtk::Align::START);
+    auto* const path_entry = Gtk::make_managed<Gtk::Entry>();
+    path_entry->set_hexpand(true);
+    path_entry->set_text(gtr_pref_string_get(TR_KEY_remote_session_url_base_path));
+    path_entry->signal_changed().connect([this, path_entry]()
+                                         { core_->set_pref(TR_KEY_remote_session_url_base_path, path_entry->get_text()); });
+    grid->attach(*path_label, 0, row, 1, 1);
+    grid->attach(*path_entry, 1, row++, 1, 1);
+
+    auto* const https_tb = Gtk::make_managed<Gtk::CheckButton>(_("_Use HTTPS"));
+    https_tb->set_active(gtr_pref_flag_get(TR_KEY_remote_session_https));
+    https_tb->signal_toggled().connect(
+        [this, https_tb]() { core_->set_pref(TR_KEY_remote_session_https, https_tb->get_active()); });
+    grid->attach(*https_tb, 0, row++, 2, 1);
+
+    remote_auth_tb_ = Gtk::make_managed<Gtk::CheckButton>(_("_Use authentication"));
+    remote_auth_tb_->set_active(gtr_pref_flag_get(TR_KEY_remote_session_requires_authentication));
+    remote_auth_tb_->signal_toggled().connect([this]()
+                                               {
+                                                   core_->set_pref(
+                                                       TR_KEY_remote_session_requires_authentication,
+                                                       remote_auth_tb_->get_active());
+                                                   refresh_remote_auth_sensitivity();
+                                               });
+    grid->attach(*remote_auth_tb_, 0, row++, 2, 1);
+
+    auto* const user_label = Gtk::make_managed<Gtk::Label>(_("_Username:"), true);
+    user_label->set_halign(Gtk::Align::START);
+    auto* const user_entry = Gtk::make_managed<Gtk::Entry>();
+    user_entry->set_hexpand(true);
+    user_entry->set_text(gtr_pref_string_get(TR_KEY_remote_session_username));
+    user_entry->signal_changed().connect([this, user_entry]()
+                                          { core_->set_pref(TR_KEY_remote_session_username, user_entry->get_text()); });
+    remote_auth_widgets_.push_back(user_label);
+    remote_auth_widgets_.push_back(user_entry);
+    grid->attach(*user_label, 0, row, 1, 1);
+    grid->attach(*user_entry, 1, row++, 1, 1);
+
+    auto* const pass_label = Gtk::make_managed<Gtk::Label>(_("_Password:"), true);
+    pass_label->set_halign(Gtk::Align::START);
+    auto* const pass_entry = Gtk::make_managed<Gtk::Entry>();
+    pass_entry->set_hexpand(true);
+    pass_entry->set_visibility(false);
+    pass_entry->set_text(gtr_pref_string_get(TR_KEY_remote_session_password));
+    pass_entry->signal_changed().connect([this, pass_entry]()
+                                         { core_->set_pref(TR_KEY_remote_session_password, pass_entry->get_text()); });
+    remote_auth_widgets_.push_back(pass_label);
+    remote_auth_widgets_.push_back(pass_entry);
+    grid->attach(*pass_label, 0, row, 1, 1);
+    grid->attach(*pass_entry, 1, row++, 1, 1);
+
+    auto* const open_button = Gtk::make_managed<Gtk::Button>(_("_Open web client"), true);
+    open_button->signal_clicked().connect(sigc::mem_fun(*this, &RemotePage::onLaunchClutchCB));
+    grid->attach(*open_button, 0, row++, 2, 1);
+
+    remote_panel_->append(*frame);
+    refresh_remote_auth_sensitivity();
+}
+
+void RemotePage::refresh_remote_auth_sensitivity()
+{
+    auto const auth_active = remote_auth_tb_ != nullptr && remote_auth_tb_->get_active();
+
+    for (auto* const widget : remote_auth_widgets_)
+    {
+        widget->set_sensitive(auth_active);
+    }
+}
+
+void RemotePage::on_session_mode_changed()
+{
+    auto const mode = static_cast<SessionMode>(gtr_combo_box_get_active_enum(*mode_combo_));
+    apply_session_mode_prefs(mode);
+    update_mode_panels();
+    restart_note_->set_visible(get_runtime_session_mode(*core_) != mode);
+}
+
+void RemotePage::update_mode_panels()
+{
+    auto const mode = static_cast<SessionMode>(gtr_combo_box_get_active_enum(*mode_combo_));
+
+    host_panel_->set_visible(mode == SessionMode::Host);
+    remote_panel_->set_visible(mode == SessionMode::Remote);
+    none_panel_->set_visible(mode == SessionMode::None);
 }
 
 RemotePage::RemotePage(BaseObjectType* cast_item, Glib::RefPtr<Gtk::Builder> const& builder, Glib::RefPtr<Session> const& core)
     : PageBase(cast_item, builder, core)
     , core_(core)
+    , host_panel_(Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL))
+    , remote_panel_(Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL))
+    , none_panel_(Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL))
     , view_(get_widget<Gtk::TreeView>("rpc_whitelist_view"))
     , remove_button_(get_widget<Gtk::Button>("remove_from_rpc_whistlist_button"))
     , rpc_tb_(init_check_button("enable_rpc_check", TR_KEY_rpc_enabled))
     , auth_tb_(init_check_button("enable_rpc_auth_check", TR_KEY_rpc_authentication_required))
     , whitelist_tb_(init_check_button("rpc_whitelist_check", TR_KEY_rpc_whitelist_enabled))
 {
+    detach_host_frame_into(*host_panel_);
+    build_remote_client_panel();
+    build_none_panel();
+
+    auto* const mode_label = Gtk::make_managed<Gtk::Label>(_("_Session mode:"), true);
+    mode_combo_ = Gtk::make_managed<Gtk::ComboBox>();
+    gtr_combo_box_set_enum(
+        *mode_combo_,
+        {
+            { _("Act as _remote (connect to daemon)"), static_cast<int>(SessionMode::Remote) },
+            { _("Act as _host (allow remote control)"), static_cast<int>(SessionMode::Host) },
+            { _("None (local only)"), static_cast<int>(SessionMode::None) },
+        });
+    gtr_combo_box_set_active_enum(*mode_combo_, static_cast<int>(get_session_mode()));
+
+    restart_note_ = Gtk::make_managed<Gtk::Label>(
+        _("Restart the application to apply session mode changes."));
+#if GTKMM_CHECK_VERSION(4, 0, 0)
+    restart_note_->add_css_class("dim-label");
+    restart_note_->set_wrap(true);
+#endif
+    restart_note_->set_halign(Gtk::Align::START);
+    restart_note_->set_visible(get_runtime_session_mode(*core_) != get_session_mode());
+
+    auto* const mode_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+    mode_row->set_spacing(12);
+    mode_row->append(*mode_label);
+    mode_row->append(*mode_combo_);
+
+    auto* const panels_box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
+    panels_box->set_spacing(12);
+    panels_box->set_vexpand(true);
+    panels_box->append(*host_panel_);
+    panels_box->append(*remote_panel_);
+    panels_box->append(*none_panel_);
+
+#if GTKMM_CHECK_VERSION(4, 0, 0)
+    append(*mode_row);
+    append(*restart_note_);
+    append(*panels_box);
+#else
+    pack_start(*mode_row, Gtk::PACK_SHRINK);
+    pack_start(*restart_note_, Gtk::PACK_SHRINK);
+    pack_start(*panels_box, Gtk::PACK_EXPAND_WIDGET);
+#endif
+
+    mode_combo_->signal_changed().connect(sigc::mem_fun(*this, &RemotePage::on_session_mode_changed));
+    update_mode_panels();
+
     rpc_tb_->signal_toggled().connect([this]() { refreshRPCSensitivity(); });
     auto* const open_button = get_widget<Gtk::Button>("open_web_client_button");
-    open_button->signal_clicked().connect(&RemotePage::onLaunchClutchCB);
+    open_button->signal_clicked().connect(sigc::mem_fun(*this, &RemotePage::onLaunchClutchCB));
 
-    init_spin_button<uint16_t>("rpc_port_spin", TR_KEY_rpc_port, 0, std::numeric_limits<uint16_t>::max(), 1);
+    init_spin_button("rpc_port_spin", TR_KEY_rpc_port, 0, std::numeric_limits<uint16_t>::max(), 1);
 
     auth_tb_->signal_toggled().connect([this]() { refreshRPCSensitivity(); });
 
@@ -861,18 +1146,18 @@ SpeedPage::SpeedPage(BaseObjectType* cast_item, Glib::RefPtr<Gtk::Builder> const
     localize_label(
         *init_check_button("upload_limit_check", TR_KEY_speed_limit_up_enabled),
         fmt::arg("speed_units", speed_units_kbyps_str));
-    init_spin_button<uint32_t>("upload_limit_spin", TR_KEY_speed_limit_up, 0, std::numeric_limits<uint32_t>::max(), 5);
+    init_spin_button("upload_limit_spin", TR_KEY_speed_limit_up, 0, std::numeric_limits<int>::max(), 5);
 
     localize_label(
         *init_check_button("download_limit_check", TR_KEY_speed_limit_down_enabled),
         fmt::arg("speed_units", speed_units_kbyps_str));
-    init_spin_button<uint32_t>("download_limit_spin", TR_KEY_speed_limit_down, 0, std::numeric_limits<uint32_t>::max(), 5);
+    init_spin_button("download_limit_spin", TR_KEY_speed_limit_down, 0, std::numeric_limits<int>::max(), 5);
 
     localize_label(*get_widget<Gtk::Label>("alt_upload_limit_label"), fmt::arg("speed_units", speed_units_kbyps_str));
-    init_spin_button<uint32_t>("alt_upload_limit_spin", TR_KEY_alt_speed_up, 0, std::numeric_limits<uint32_t>::max(), 5);
+    init_spin_button("alt_upload_limit_spin", TR_KEY_alt_speed_up, 0, std::numeric_limits<int>::max(), 5);
 
     localize_label(*get_widget<Gtk::Label>("alt_download_limit_label"), fmt::arg("speed_units", speed_units_kbyps_str));
-    init_spin_button<uint32_t>("alt_download_limit_spin", TR_KEY_alt_speed_down, 0, std::numeric_limits<uint32_t>::max(), 5);
+    init_spin_button("alt_download_limit_spin", TR_KEY_alt_speed_down, 0, std::numeric_limits<int>::max(), 5);
 
     init_time_combo("alt_speed_start_time_combo", TR_KEY_alt_speed_time_begin);
     init_time_combo("alt_speed_end_time_combo", TR_KEY_alt_speed_time_end);
@@ -1038,7 +1323,7 @@ NetworkPage::NetworkPage(
     , core_(core)
     , portLabel_(get_widget<Gtk::Label>("listening_port_status_label"))
     , portButton_(get_widget<Gtk::Button>("test_listening_port_button"))
-    , portSpin_(init_spin_button<uint16_t>("listening_port_spin", TR_KEY_peer_port, 1, std::numeric_limits<uint16_t>::max(), 1))
+    , portSpin_(init_spin_button("listening_port_spin", TR_KEY_peer_port, 1, std::numeric_limits<uint16_t>::max(), 1))
 {
     portButton_->signal_clicked().connect([this]() { onPortTest(); });
     updatePortStatusText();
@@ -1047,13 +1332,8 @@ NetworkPage::NetworkPage(
 
     init_check_button("pick_random_listening_port_at_start_check", TR_KEY_peer_port_random_on_start);
     init_check_button("enable_listening_port_forwarding_check", TR_KEY_port_forwarding_enabled);
-    init_spin_button<uint16_t>(
-        "max_torrent_peers_spin",
-        TR_KEY_peer_limit_per_torrent,
-        1,
-        std::numeric_limits<uint16_t>::max(),
-        5);
-    init_spin_button<uint16_t>("max_total_peers_spin", TR_KEY_peer_limit_global, 1, std::numeric_limits<uint16_t>::max(), 5);
+    init_spin_button("max_torrent_peers_spin", TR_KEY_peer_limit_per_torrent, 1, INT_MAX, 5);
+    init_spin_button("max_total_peers_spin", TR_KEY_peer_limit_global, 1, INT_MAX, 5);
 
 #ifdef WITH_UTP
     init_check_button("enable_utp_check", TR_KEY_utp_enabled);

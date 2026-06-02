@@ -77,6 +77,29 @@ auto startedTimesText(uint64_t n)
 
 bool StatsDialog::Impl::updateStats()
 {
+    if (core_->is_remote())
+    {
+        tr_session_stats current{};
+        tr_session_stats cumulative{};
+        if (!core_->get_remote_stats(current, cumulative))
+        {
+            return true;
+        }
+
+        setLabel(one_up_lb_, tr_strlsize(current.uploadedBytes));
+        setLabel(one_down_lb_, tr_strlsize(current.downloadedBytes));
+        setLabel(one_time_lb_, tr_format_time(current.secondsActive));
+        setLabelFromRatio(one_ratio_lb_, current.ratio);
+
+        setLabel(all_sessions_lb_, startedTimesText(cumulative.sessionCount));
+        setLabel(all_up_lb_, tr_strlsize(cumulative.uploadedBytes));
+        setLabel(all_down_lb_, tr_strlsize(cumulative.downloadedBytes));
+        setLabel(all_time_lb_, tr_format_time(cumulative.secondsActive));
+        setLabelFromRatio(all_ratio_lb_, cumulative.ratio);
+
+        return true;
+    }
+
     auto stats = tr_sessionGetStats(core_->get_session());
     setLabel(one_up_lb_, tr_strlsize(stats.uploadedBytes));
     setLabel(one_down_lb_, tr_strlsize(stats.downloadedBytes));
@@ -100,6 +123,11 @@ StatsDialog::Impl::~Impl()
 
 void StatsDialog::Impl::dialogResponse(int response)
 {
+    if (response == TR_RESPONSE_RESET && core_->is_remote())
+    {
+        return;
+    }
+
     if (response == TR_RESPONSE_RESET)
     {
         auto w = std::make_shared<Gtk::MessageDialog>(

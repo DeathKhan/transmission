@@ -186,10 +186,27 @@ public:
         bool has_metadata = {};
         bool has_seed_ratio = {};
         bool stalled = {};
+
+        std::string download_dir;
+        int file_count = {};
+        std::vector<std::string> tracker_sitenames;
     };
+
+    void apply_rpc_snapshot(TorrentRpcSnapshot const& snapshot, ChangeFlags& result);
 
 public:
     Impl(Torrent& torrent, tr_torrent* raw_torrent);
+    Impl(Torrent& torrent, TorrentRpcSnapshot const& snapshot);
+
+    [[nodiscard]] bool is_rpc() const noexcept
+    {
+        return is_rpc_;
+    }
+
+    [[nodiscard]] tr_torrent_id_t get_remote_id() const noexcept
+    {
+        return remote_id_;
+    }
 
     tr_torrent* get_raw_torrent()
     {
@@ -222,7 +239,9 @@ private:
 
 private:
     Torrent& torrent_;
-    tr_torrent* const raw_torrent_;
+    tr_torrent* raw_torrent_ = nullptr;
+    tr_torrent_id_t remote_id_ = -1;
+    bool is_rpc_ = false;
 
     Cache cache_;
 };
@@ -237,8 +256,29 @@ Torrent::Impl::Impl(Torrent& torrent, tr_torrent* raw_torrent)
     }
 }
 
+Torrent::Torrent(TorrentRpcSnapshot const& snapshot)
+    : Glib::ObjectBase(typeid(Torrent))
+    , ExtraClassInit(&Impl::class_init)
+    , impl_(std::make_unique<Impl>(*this, snapshot))
+{
+}
+
+Torrent::Impl::Impl(Torrent& torrent, TorrentRpcSnapshot const& snapshot)
+    : torrent_(torrent)
+    , remote_id_(snapshot.id)
+    , is_rpc_(true)
+{
+    auto changes = ChangeFlags{};
+    apply_rpc_snapshot(snapshot, changes);
+}
+
 Torrent::ChangeFlags Torrent::Impl::update_cache()
 {
+    if (is_rpc_)
+    {
+        return {};
+    }
+
     auto result = ChangeFlags();
 
     auto const stats = tr_torrentStat(raw_torrent_);
@@ -735,12 +775,176 @@ Glib::ustring const& Torrent::get_name_collated() const
 
 tr_torrent_id_t Torrent::get_id() const
 {
+    if (impl_->is_rpc())
+    {
+        return impl_->get_remote_id();
+    }
+
     return tr_torrentId(impl_->get_raw_torrent());
+}
+
+bool Torrent::is_remote_view() const noexcept
+{
+    return impl_->is_rpc();
 }
 
 tr_torrent& Torrent::get_underlying() const
 {
+    g_assert(impl_->get_raw_torrent() != nullptr);
     return *impl_->get_raw_torrent();
+}
+
+Glib::RefPtr<Torrent> Torrent::create_from_rpc(TorrentRpcSnapshot const& snapshot)
+{
+    return Glib::make_refptr_for_instance(new Torrent(snapshot));
+}
+
+std::vector<std::string> const& Torrent::get_tracker_sitenames() const noexcept
+{
+    return impl_->get_cache().tracker_sitenames;
+}
+
+std::string const& Torrent::get_download_dir() const noexcept
+{
+    return impl_->get_cache().download_dir;
+}
+
+int Torrent::get_file_count() const noexcept
+{
+    return impl_->get_cache().file_count;
+}
+
+bool Torrent::has_incomplete_data() const noexcept
+{
+    if (!impl_->is_rpc())
+    {
+        return !get_finished() || get_percent_done_fraction() < 1.0F;
+    }
+
+    auto const& cache = impl_->get_cache();
+    return cache.left_until_done.base_quantity() > 0 || (!cache.finished && get_percent_done_fraction() < 1.0F);
+}
+
+Torrent::ChangeFlags Torrent::update_from_rpc(TorrentRpcSnapshot const& snapshot)
+{
+    if (!impl_->is_rpc())
+    {
+        return {};
+    }
+
+    auto result = ChangeFlags{};
+    impl_->apply_rpc_snapshot(snapshot, result);
+    impl_->notify_property_changes(result);
+    return result;
+}
+
+void Torrent::Impl::apply_rpc_snapshot(TorrentRpcSnapshot const& snapshot, ChangeFlags& result)
+{
+    auto const new_name = Glib::ustring{ snapshot.name };
+    if (cache_.name != new_name)
+    {
+        cache_.name = new_name;
+        cache_.name_collated = cache_.name.lowercase();
+        result.set(ChangeFlag::NAME);
+    }
+
+    auto const percent_done = Percents(std::clamp(snapshot.percent_done, 0.0F, 1.0F));
+    auto const has_seed_ratio = snapshot.seed_ratio_mode == TR_RATIOLIMIT_SINGLE;
+    auto const ratio = static_cast<float>(tr_getRatio(snapshot.uploaded_ever, snapshot.downloaded_ever));
+    auto const percent_complete = snapshot.total_size > 0 ?
+        Percents(static_cast<float>(snapshot.have_valid + snapshot.have_unchecked) / static_cast<float>(snapshot.total_size)) :
+        Percents(0.0F);
+    auto const has_metadata = snapshot.metadata_percent_complete >= 1.0F;
+    auto const active_peers_down = static_cast<int>(snapshot.peers_sending_to_us + snapshot.webseeds_sending_to_us);
+    auto const active_peers_up = static_cast<int>(snapshot.peers_getting_from_us);
+    auto trackers_hash = 0U;
+    for (auto const& site : snapshot.tracker_sitenames)
+    {
+        trackers_hash ^= std::hash<std::string>{}(site);
+    }
+
+    update_cache_value(cache_.activity, snapshot.activity, result, ChangeFlag::ACTIVITY);
+    update_cache_value(cache_.percent_done, percent_done, result, ChangeFlag::PERCENT_DONE);
+    update_cache_value(cache_.percent_complete, percent_complete, result, ChangeFlag::PERCENT_COMPLETE);
+    update_cache_value(cache_.activity_percent_done, percent_done, result, ChangeFlag::PERCENT_DONE);
+    update_cache_value(cache_.finished, snapshot.finished, result, ChangeFlag::FINISHED);
+    update_cache_value(cache_.error_code, snapshot.error_code, result, ChangeFlag::ERROR_CODE);
+    auto const new_error_message = Glib::ustring{ snapshot.error_message };
+    if (cache_.error_message.raw() != new_error_message.raw())
+    {
+        cache_.error_message = new_error_message;
+        result.set(ChangeFlag::ERROR_MESSAGE);
+    }
+    update_cache_value(cache_.total_size, Storage{ snapshot.total_size, Storage::Units::Bytes }, result, ChangeFlag::TOTAL_SIZE);
+    update_cache_value(
+        cache_.speed_down,
+        Speed{ static_cast<double>(snapshot.rate_download), Speed::Units::Byps },
+        result,
+        ChangeFlag::SPEED_DOWN);
+    update_cache_value(
+        cache_.speed_up,
+        Speed{ static_cast<double>(snapshot.rate_upload), Speed::Units::Byps },
+        result,
+        ChangeFlag::SPEED_UP);
+    update_cache_value(
+        cache_.active,
+        active_peers_down > 0 || active_peers_up > 0 || snapshot.activity == TR_STATUS_CHECK,
+        result,
+        ChangeFlag::ACTIVE);
+    update_cache_value(cache_.active_peers_down, active_peers_down, result, ChangeFlag::ACTIVE_PEERS_DOWN);
+    update_cache_value(cache_.active_peers_up, active_peers_up, result, ChangeFlag::ACTIVE_PEERS_UP);
+    update_cache_value(cache_.peers_connected, snapshot.peers_connected, result, ChangeFlag::LONG_STATUS);
+    update_cache_value(cache_.peers_sending_to_us, snapshot.peers_sending_to_us, result, ChangeFlag::LONG_STATUS);
+    update_cache_value(cache_.peers_getting_from_us, snapshot.peers_getting_from_us, result, ChangeFlag::LONG_STATUS);
+    update_cache_value(cache_.webseeds_sending_to_us, snapshot.webseeds_sending_to_us, result, ChangeFlag::LONG_STATUS);
+    update_cache_value(
+        cache_.active_peer_count,
+        active_peers_down + active_peers_up,
+        result,
+        ChangeFlag::ACTIVE_PEER_COUNT);
+    update_cache_value(cache_.recheck_progress, Percents(snapshot.recheck_progress), result, ChangeFlag::RECHECK_PROGRESS);
+    update_cache_value(cache_.has_metadata, has_metadata, result, ChangeFlag::HAS_METADATA);
+    update_cache_value(cache_.stalled, snapshot.is_stalled, result, ChangeFlag::STALLED);
+    update_cache_value(cache_.ratio, ratio, 0.01F, result, ChangeFlag::RATIO);
+    update_cache_value(cache_.eta, snapshot.eta, result, ChangeFlag::ETA);
+    update_cache_value(cache_.queue_position, snapshot.queue_position, result, ChangeFlag::QUEUE_POSITION);
+    update_cache_value(cache_.has_seed_ratio, has_seed_ratio, result, ChangeFlag::LONG_PROGRESS);
+    update_cache_value(cache_.seed_ratio, snapshot.seed_ratio_limit, 0.01F, result, ChangeFlag::LONG_PROGRESS);
+    update_cache_value(
+        cache_.have_unchecked,
+        Storage{ snapshot.have_unchecked, Storage::Units::Bytes },
+        result,
+        ChangeFlag::LONG_PROGRESS);
+    update_cache_value(
+        cache_.have_valid,
+        Storage{ snapshot.have_valid, Storage::Units::Bytes },
+        result,
+        ChangeFlag::LONG_PROGRESS);
+    update_cache_value(
+        cache_.left_until_done,
+        Storage{ snapshot.left_until_done, Storage::Units::Bytes },
+        result,
+        ChangeFlag::LONG_PROGRESS);
+    update_cache_value(
+        cache_.size_when_done,
+        Storage{ snapshot.size_when_done, Storage::Units::Bytes },
+        result,
+        ChangeFlag::LONG_PROGRESS);
+    update_cache_value(
+        cache_.uploaded_ever,
+        Storage{ snapshot.uploaded_ever, Storage::Units::Bytes },
+        result,
+        ChangeFlag::LONG_PROGRESS);
+    update_cache_value(cache_.trackers, trackers_hash, result, ChangeFlag::TRACKERS);
+    update_cache_value(
+        cache_.metadata_percent_complete,
+        Percents(snapshot.metadata_percent_complete),
+        result,
+        ChangeFlag::HAS_METADATA);
+
+    cache_.download_dir = snapshot.download_dir;
+    cache_.file_count = snapshot.file_count;
+    cache_.tracker_sitenames = snapshot.tracker_sitenames;
 }
 
 Speed Torrent::get_speed_up() const

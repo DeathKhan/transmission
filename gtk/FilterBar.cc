@@ -226,22 +226,35 @@ bool FilterBar::Impl::tracker_filter_model_update()
             continue;
         }
 
-        auto const& raw_torrent = torrent->get_underlying();
-
-        auto site_to_host_and_announce = std::map<std::string, std::pair<std::string, std::string>>{};
-        for (size_t j = 0, n = tr_torrentTrackerCount(&raw_torrent); j < n; ++j)
+        if (torrent->is_remote_view())
         {
-            auto const view = tr_torrentTracker(&raw_torrent, j);
-            site_to_host_and_announce.try_emplace(std::data(view.sitename), view.host_and_port, view.announce);
+            for (auto const& sitename : torrent->get_tracker_sitenames())
+            {
+                auto& info = site_infos[sitename];
+                info.sitename = sitename;
+                info.host = sitename;
+                ++info.count;
+            }
         }
-
-        for (auto const& [sitename, host_and_announce] : site_to_host_and_announce)
+        else
         {
-            auto& info = site_infos[sitename];
-            info.host = host_and_announce.first;
-            info.announce_url = host_and_announce.second;
-            info.sitename = sitename;
-            ++info.count;
+            auto const& raw_torrent = torrent->get_underlying();
+
+            auto site_to_host_and_announce = std::map<std::string, std::pair<std::string, std::string>>{};
+            for (size_t j = 0, n = tr_torrentTrackerCount(&raw_torrent); j < n; ++j)
+            {
+                auto const view = tr_torrentTracker(&raw_torrent, j);
+                site_to_host_and_announce.try_emplace(std::data(view.sitename), view.host_and_port, view.announce);
+            }
+
+            for (auto const& [sitename, host_and_announce] : site_to_host_and_announce)
+            {
+                auto& info = site_infos[sitename];
+                info.host = host_and_announce.first;
+                info.announce_url = host_and_announce.second;
+                info.sitename = sitename;
+                ++info.count;
+            }
         }
 
         ++n_torrents;

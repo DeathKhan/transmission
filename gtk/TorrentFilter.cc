@@ -217,6 +217,19 @@ bool TorrentFilter::match_tracker(Torrent const& torrent, Tracker type, Glib::us
 
     g_assert(type == Tracker::HOST);
 
+    if (torrent.is_remote_view())
+    {
+        for (auto const& sitename : torrent.get_tracker_sitenames())
+        {
+            if (sitename == host.raw())
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     auto const& raw_torrent = torrent.get_underlying();
 
     for (auto i = size_t{ 0 }, n = tr_torrentTrackerCount(&raw_torrent); i < n; ++i)
@@ -240,15 +253,18 @@ bool TorrentFilter::match_text(Torrent const& torrent, Glib::ustring const& text
     }
     else
     {
-        auto const& raw_torrent = torrent.get_underlying();
-
         /* test the torrent name... */
         ret = torrent.get_name().casefold().find(text) != Glib::ustring::npos;
 
-        /* test the files... */
-        for (auto i = size_t{ 0 }, n = tr_torrentFileCount(&raw_torrent); i < n && !ret; ++i)
+        if (!ret && !torrent.is_remote_view())
         {
-            ret = Glib::ustring(tr_torrentFile(&raw_torrent, i).name).casefold().find(text) != Glib::ustring::npos;
+            auto const& raw_torrent = torrent.get_underlying();
+
+            /* test the files... */
+            for (auto i = size_t{ 0 }, n = tr_torrentFileCount(&raw_torrent); i < n && !ret; ++i)
+            {
+                ret = Glib::ustring(tr_torrentFile(&raw_torrent, i).name).casefold().find(text) != Glib::ustring::npos;
+            }
         }
     }
 

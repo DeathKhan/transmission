@@ -18,8 +18,6 @@
 #include "TorrentCellRenderer.h"
 #endif
 
-#include <libtransmission-app/display-modes.h>
-
 #include <libtransmission/transmission.h>
 #include <libtransmission/values.h>
 
@@ -63,8 +61,7 @@
 
 using namespace std::string_literals;
 using namespace std::string_view_literals;
-using namespace tr::Values;
-using namespace tr::app;
+using namespace libtransmission::Values;
 
 using VariantInt = Glib::Variant<int>;
 using VariantDouble = Glib::Variant<double>;
@@ -96,11 +93,11 @@ public:
         Glib::RefPtr<Gtk::Builder> const& builder,
         Glib::RefPtr<Gio::ActionGroup> const& actions,
         Glib::RefPtr<Session> const& core);
-    ~Impl();
     Impl(Impl&&) = delete;
     Impl(Impl const&) = delete;
-    Impl& operator=(Impl const&) = delete;
     Impl& operator=(Impl&&) = delete;
+    Impl& operator=(Impl const&) = delete;
+    ~Impl();
 
     [[nodiscard]] Glib::RefPtr<TorrentViewSelection> get_selection() const;
 
@@ -135,6 +132,7 @@ private:
 
     void syncAltSpeedButton();
 
+    void status_menu_toggled_cb(std::string const& action_name, Glib::ustring const& val);
     void onOptionsClicked();
     void alt_speed_toggled_cb();
     void onAltSpeedToggledIdle();
@@ -146,6 +144,7 @@ private:
     sigc::signal<void()> signal_selection_changed_;
 
     Glib::RefPtr<Gio::ActionGroup> options_actions_;
+    Glib::RefPtr<Gio::ActionGroup> stats_actions_;
 
     std::array<OptionMenuInfo, 2> speed_menu_info_;
     OptionMenuInfo ratio_menu_info_;
@@ -370,6 +369,12 @@ MainWindow::Impl::~Impl()
     pref_handler_id_.disconnect();
 }
 
+void MainWindow::Impl::status_menu_toggled_cb(std::string const& action_name, Glib::ustring const& val)
+{
+    stats_actions_->change_action_state(action_name, VariantString::create(val));
+    core_->set_pref(TR_KEY_statusbar_stats, val.raw());
+}
+
 void MainWindow::Impl::syncAltSpeedButton()
 {
     bool const b = gtr_pref_flag_get(TR_KEY_alt_speed_enabled);
@@ -379,10 +384,8 @@ void MainWindow::Impl::syncAltSpeedButton()
             fmt::runtime(
                 b ? _("Click to disable Alternative Speed Limits\n ({download_speed} down, {upload_speed} up)") :
                     _("Click to enable Alternative Speed Limits\n ({download_speed} down, {upload_speed} up)")),
-            fmt::arg(
-                "download_speed",
-                Speed{ gtr_pref_int_get<size_t>(TR_KEY_alt_speed_down), Speed::Units::KByps }.to_string()),
-            fmt::arg("upload_speed", Speed{ gtr_pref_int_get<size_t>(TR_KEY_alt_speed_up), Speed::Units::KByps }.to_string())));
+            fmt::arg("download_speed", Speed{ gtr_pref_int_get(TR_KEY_alt_speed_down), Speed::Units::KByps }.to_string()),
+            fmt::arg("upload_speed", Speed{ gtr_pref_int_get(TR_KEY_alt_speed_up), Speed::Units::KByps }.to_string())));
 }
 
 void MainWindow::Impl::alt_speed_toggled_cb()
@@ -396,7 +399,10 @@ void MainWindow::Impl::alt_speed_toggled_cb()
 
 void MainWindow::Impl::onAltSpeedToggledIdle()
 {
-    core_->set_pref(TR_KEY_alt_speed_enabled, tr_sessionUsesAltSpeed(core_->get_session()));
+    if (auto* const session = core_->get_session(); session != nullptr)
+    {
+        core_->set_pref(TR_KEY_alt_speed_enabled, tr_sessionUsesAltSpeed(session));
+    }
 }
 
 /***
@@ -406,24 +412,24 @@ void MainWindow::Impl::onAltSpeedToggledIdle()
 void MainWindow::Impl::onSpeedToggled(std::string const& action_name, tr_direction dir, bool enabled)
 {
     options_actions_->change_action_state(action_name, VariantInt::create(enabled ? 1 : 0));
-    core_->set_pref(dir == tr_direction::Up ? TR_KEY_speed_limit_up_enabled : TR_KEY_speed_limit_down_enabled, enabled);
+    core_->set_pref(dir == TR_UP ? TR_KEY_speed_limit_up_enabled : TR_KEY_speed_limit_down_enabled, enabled);
 }
 
 void MainWindow::Impl::onSpeedSet(tr_direction dir, int KBps)
 {
-    core_->set_pref(dir == tr_direction::Up ? TR_KEY_speed_limit_up : TR_KEY_speed_limit_down, KBps);
-    core_->set_pref(dir == tr_direction::Up ? TR_KEY_speed_limit_up_enabled : TR_KEY_speed_limit_down_enabled, true);
+    core_->set_pref(dir == TR_UP ? TR_KEY_speed_limit_up : TR_KEY_speed_limit_down, KBps);
+    core_->set_pref(dir == TR_UP ? TR_KEY_speed_limit_up_enabled : TR_KEY_speed_limit_down_enabled, true);
 }
 
 Glib::RefPtr<Gio::MenuModel> MainWindow::Impl::createSpeedMenu(
     Glib::RefPtr<Gio::SimpleActionGroup> const& actions,
     tr_direction dir)
 {
-    auto& info = speed_menu_info_.at(static_cast<uint8_t>(dir));
+    auto& info = speed_menu_info_.at(dir);
 
     auto m = Gio::Menu::create();
 
-    auto const action_name = fmt::format("speed-limit-{}", dir == tr_direction::Up ? "up" : "down");
+    auto const action_name = fmt::format("speed-limit-{}", dir == TR_UP ? "up" : "down");
     auto const full_action_name = fmt::format("{}.{}", OptionsMenuActionGroupName, action_name);
     info.action = actions->add_action_radio_integer(
         action_name,
@@ -469,13 +475,13 @@ Glib::RefPtr<Gio::MenuModel> MainWindow::Impl::createSpeedMenu(
 void MainWindow::Impl::onRatioToggled(std::string const& action_name, bool enabled)
 {
     options_actions_->change_action_state(action_name, VariantInt::create(enabled ? 1 : 0));
-    core_->set_pref(TR_KEY_seed_ratio_limited, enabled);
+    core_->set_pref(TR_KEY_ratio_limit_enabled, enabled);
 }
 
 void MainWindow::Impl::onRatioSet(double ratio)
 {
-    core_->set_pref(TR_KEY_seed_ratio_limit, ratio);
-    core_->set_pref(TR_KEY_seed_ratio_limited, true);
+    core_->set_pref(TR_KEY_ratio_limit, ratio);
+    core_->set_pref(TR_KEY_ratio_limit_enabled, true);
 }
 
 Glib::RefPtr<Gio::MenuModel> MainWindow::Impl::createRatioMenu(Glib::RefPtr<Gio::SimpleActionGroup> const& actions)
@@ -534,8 +540,8 @@ Glib::RefPtr<Gio::MenuModel> MainWindow::Impl::createOptionsMenu()
     auto actions = Gio::SimpleActionGroup::create();
 
     auto section = Gio::Menu::create();
-    section->append_submenu(_("Limit Download Speed"), createSpeedMenu(actions, tr_direction::Down));
-    section->append_submenu(_("Limit Upload Speed"), createSpeedMenu(actions, tr_direction::Up));
+    section->append_submenu(_("Limit Download Speed"), createSpeedMenu(actions, TR_DOWN));
+    section->append_submenu(_("Limit Upload Speed"), createSpeedMenu(actions, TR_UP));
     top->append_section(section);
 
     section = Gio::Menu::create();
@@ -567,64 +573,57 @@ void MainWindow::Impl::onOptionsClicked()
     };
 
     update_menu(
-        speed_menu_info_[static_cast<uint8_t>(tr_direction::Down)],
-        Speed{ gtr_pref_int_get<size_t>(TR_KEY_speed_limit_down), Speed::Units::KByps }.to_string(),
+        speed_menu_info_[TR_DOWN],
+        Speed{ gtr_pref_int_get(TR_KEY_speed_limit_down), Speed::Units::KByps }.to_string(),
         TR_KEY_speed_limit_down_enabled);
 
     update_menu(
-        speed_menu_info_[static_cast<uint8_t>(tr_direction::Up)],
-        Speed{ gtr_pref_int_get<size_t>(TR_KEY_speed_limit_up), Speed::Units::KByps }.to_string(),
+        speed_menu_info_[TR_UP],
+        Speed{ gtr_pref_int_get(TR_KEY_speed_limit_up), Speed::Units::KByps }.to_string(),
         TR_KEY_speed_limit_up_enabled);
 
     update_menu(
         ratio_menu_info_,
         fmt::format(
-            fmt::runtime(_("Stop at Seed Ratio ({ratio})")),
-            fmt::arg("ratio", tr_strlratio(gtr_pref_double_get(TR_KEY_seed_ratio_limit)))),
-        TR_KEY_seed_ratio_limited);
+            fmt::runtime(_("Stop at Ratio ({ratio})")),
+            fmt::arg("ratio", tr_strlratio(gtr_pref_double_get(TR_KEY_ratio_limit)))),
+        TR_KEY_ratio_limit_enabled);
 }
 
 Glib::RefPtr<Gio::MenuModel> MainWindow::Impl::createStatsMenu()
 {
-    using StatsType = gint32;
-    using StatsVariant = Glib::Variant<StatsType>;
-
-    auto const to_var = [](auto const mode)
+    struct StatsModeInfo
     {
-        return StatsVariant::create(static_cast<StatsType>(mode));
+        char const* val;
+        char const* i18n;
     };
 
-    // build the action group
-    static auto constexpr Key = TR_KEY_statusbar_stats;
-    auto const action_name = "stats-mode"s;
-    auto const current_value = gtr_pref_get<StatsMode>(Key).value_or(DefaultStatsMode);
-    auto actions = Gio::SimpleActionGroup::create();
-    actions->add_action_radio_integer(
-        action_name,
-        [this, action_name, actions, to_var](gint32 const ival)
-        {
-            actions->change_action_state(action_name, to_var(ival));
-            core_->set_pref(Key, static_cast<StatsMode>(ival));
-        },
-        static_cast<StatsType>(current_value));
-
-    // build the menu
-    auto const full_action_name = fmt::format("{}.{}", StatsMenuActionGroupName, action_name);
-    auto top = Gio::Menu::create();
-    auto const stats_modes = std::array<std::pair<StatsMode, char const*>, StatsModeCount>({ {
-        { StatsMode::TotalRatio, N_("Total Ratio") },
-        { StatsMode::SessionRatio, N_("Session Ratio") },
-        { StatsMode::TotalTransfer, N_("Total Transfer") },
-        { StatsMode::SessionTransfer, N_("Session Transfer") },
+    static auto const stats_modes = std::array<StatsModeInfo, 4>({ {
+        { "total-ratio", N_("Total Ratio") },
+        { "session-ratio", N_("Session Ratio") },
+        { "total-transfer", N_("Total Transfer") },
+        { "session-transfer", N_("Session Transfer") },
     } });
-    for (auto const& [mode, display_name] : stats_modes)
+
+    auto top = Gio::Menu::create();
+    auto actions = Gio::SimpleActionGroup::create();
+
+    auto const action_name = "stats-mode"s;
+    auto const full_action_name = fmt::format("{}.{}", StatsMenuActionGroupName, action_name);
+    auto stats_mode_action = actions->add_action_radio_string(
+        action_name,
+        [this, action_name](Glib::ustring const& value) { status_menu_toggled_cb(action_name, value); },
+        gtr_pref_string_get(TR_KEY_statusbar_stats));
+
+    for (auto const& mode : stats_modes)
     {
-        auto item = Gio::MenuItem::create(_(display_name), full_action_name);
-        item->set_action_and_target(full_action_name, to_var(mode));
+        auto item = Gio::MenuItem::create(_(mode.i18n), full_action_name);
+        item->set_action_and_target(full_action_name, VariantString::create(mode.val));
         top->append_item(item);
     }
 
     window_.insert_action_group(std::string(StatsMenuActionGroupName), actions);
+    stats_actions_ = actions;
 
     return top;
 }
@@ -676,9 +675,9 @@ MainWindow::Impl::Impl(
 {
     /* make the window */
     window.set_title(Glib::get_application_name());
-    window.set_default_size(gtr_pref_int_get<int>(TR_KEY_main_window_width), gtr_pref_int_get<int>(TR_KEY_main_window_height));
+    window.set_default_size(gtr_pref_int_get(TR_KEY_main_window_width), gtr_pref_int_get(TR_KEY_main_window_height));
 #if !GTKMM_CHECK_VERSION(4, 0, 0)
-    window.move(gtr_pref_int_get<int>(TR_KEY_main_window_x), gtr_pref_int_get<int>(TR_KEY_main_window_y));
+    window.move(gtr_pref_int_get(TR_KEY_main_window_x), gtr_pref_int_get(TR_KEY_main_window_y));
 #endif
 
     if (gtr_pref_flag_get(TR_KEY_main_window_is_maximized))
@@ -740,10 +739,14 @@ MainWindow::Impl::Impl(
     prefsChanged(TR_KEY_alt_speed_enabled);
     pref_handler_id_ = core_->signal_prefs_changed().connect(sigc::mem_fun(*this, &Impl::prefsChanged));
 
-    tr_sessionSetAltSpeedFunc(
-        core_->get_session(),
-        [this](bool const /*is_enabled*/, bool const /*by_user*/)
-        { Glib::signal_idle().connect_once([this]() { onAltSpeedToggledIdle(); }); });
+    if (auto* const session = core_->get_session(); session != nullptr)
+    {
+        tr_sessionSetAltSpeedFunc(
+            session,
+            [](tr_session* /*s*/, bool /*isEnabled*/, bool /*byUser*/, gpointer p)
+            { Glib::signal_idle().connect_once([p]() { static_cast<Impl*>(p)->onAltSpeedToggledIdle(); }); },
+            this);
+    }
 
     refresh();
 
@@ -758,53 +761,77 @@ MainWindow::Impl::Impl(
 #endif
 }
 
-namespace
-{
-} // namespace
-
 void MainWindow::Impl::updateStats()
 {
-    static_assert(StatsModeCount == 4U, "StatsMode changed: update this code");
-    auto const mode = gtr_pref_get<StatsMode>(TR_KEY_statusbar_stats).value_or(DefaultStatsMode);
-    auto const use_session_stats = mode == StatsMode::SessionRatio || mode == StatsMode::SessionTransfer;
-    auto const* const ses = core_->get_session();
-    auto const stats = use_session_stats ? tr_sessionGetStats(ses) : tr_sessionGetCumulativeStats(ses);
-    stats_lb_->set_text(
-        mode == StatsMode::SessionTransfer || mode == StatsMode::TotalTransfer ?
-            fmt::format(
-                fmt::runtime(_("Down: {downloaded_size}, Up: {uploaded_size}")),
-                fmt::arg("downloaded_size", tr_strlsize(stats.downloadedBytes)),
-                fmt::arg("uploaded_size", tr_strlsize(stats.uploadedBytes))) :
-            fmt::format(fmt::runtime(_("Ratio: {ratio}")), fmt::arg("ratio", tr_strlratio(stats.ratio))));
+    Glib::ustring buf;
+
+    tr_session_stats current{};
+    tr_session_stats cumulative{};
+
+    if (core_->get_remote_stats(current, cumulative))
+    {
+        // use current / cumulative from RPC
+    }
+    else if (auto* const session = core_->get_session(); session != nullptr)
+    {
+        current = tr_sessionGetStats(session);
+        cumulative = tr_sessionGetCumulativeStats(session);
+    }
+    else
+    {
+        stats_lb_->set_text({});
+        return;
+    }
+
+    /* update the stats */
+    if (auto const pch = gtr_pref_string_get(TR_KEY_statusbar_stats); pch == "session-ratio")
+    {
+        buf = fmt::format(fmt::runtime(_("Ratio: {ratio}")), fmt::arg("ratio", tr_strlratio(current.ratio)));
+    }
+    else if (pch == "session-transfer")
+    {
+        buf = fmt::format(
+            fmt::runtime(C_("current session totals", "Down: {downloaded_size}, Up: {uploaded_size}")),
+            fmt::arg("downloaded_size", tr_strlsize(current.downloadedBytes)),
+            fmt::arg("uploaded_size", tr_strlsize(current.uploadedBytes)));
+    }
+    else if (pch == "total-transfer")
+    {
+        buf = fmt::format(
+            fmt::runtime(C_("all-time totals", "Down: {downloaded_size}, Up: {uploaded_size}")),
+            fmt::arg("downloaded_size", tr_strlsize(cumulative.downloadedBytes)),
+            fmt::arg("uploaded_size", tr_strlsize(cumulative.uploadedBytes)));
+    }
+    else /* default is total-ratio */
+    {
+        buf = fmt::format(fmt::runtime(_("Ratio: {ratio}")), fmt::arg("ratio", tr_strlratio(cumulative.ratio)));
+    }
+
+    stats_lb_->set_text(buf);
 }
 
 void MainWindow::Impl::updateSpeeds()
 {
-    auto const* const session = core_->get_session();
+    auto dn_count = int{};
+    auto dn_speed = Speed{};
+    auto up_count = int{};
+    auto up_speed = Speed{};
 
-    if (session != nullptr)
+    auto const model = core_->get_model();
+    for (auto i = 0U, count = model->get_n_items(); i < count; ++i)
     {
-        auto dn_count = int{};
-        auto dn_speed = Speed{};
-        auto up_count = int{};
-        auto up_speed = Speed{};
-
-        auto const model = core_->get_model();
-        for (auto i = 0U, count = model->get_n_items(); i < count; ++i)
-        {
-            auto const torrent = gtr_ptr_dynamic_cast<Torrent>(model->get_object(i));
-            dn_count += torrent->get_active_peers_down();
-            dn_speed += torrent->get_speed_down();
-            up_count += torrent->get_active_peers_up();
-            up_speed += torrent->get_speed_up();
-        }
-
-        dl_lb_->set_text(fmt::format(fmt::runtime(_("{download_speed} ▼")), fmt::arg("download_speed", dn_speed.to_string())));
-        dl_lb_->set_visible(dn_count > 0);
-
-        ul_lb_->set_text(fmt::format(fmt::runtime(_("{upload_speed} ▲")), fmt::arg("upload_speed", up_speed.to_string())));
-        ul_lb_->set_visible(dn_count > 0 || up_count > 0);
+        auto const torrent = gtr_ptr_dynamic_cast<Torrent>(model->get_object(i));
+        dn_count += torrent->get_active_peers_down();
+        dn_speed += torrent->get_speed_down();
+        up_count += torrent->get_active_peers_up();
+        up_speed += torrent->get_speed_up();
     }
+
+    dl_lb_->set_text(fmt::format(fmt::runtime(_("{download_speed} ▼")), fmt::arg("download_speed", dn_speed.to_string())));
+    dl_lb_->set_visible(dn_speed.base_quantity() > 0 || dn_count > 0);
+
+    ul_lb_->set_text(fmt::format(fmt::runtime(_("{upload_speed} ▲")), fmt::arg("upload_speed", up_speed.to_string())));
+    ul_lb_->set_visible(up_speed.base_quantity() > 0 || dn_count > 0 || up_count > 0);
 }
 
 void MainWindow::refresh()
@@ -814,9 +841,15 @@ void MainWindow::refresh()
 
 void MainWindow::Impl::refresh()
 {
-    if (core_ != nullptr && core_->get_session() != nullptr)
+    if (core_ == nullptr)
     {
-        updateSpeeds();
+        return;
+    }
+
+    updateSpeeds();
+
+    if (core_->get_session() != nullptr || core_->is_remote())
+    {
         updateStats();
     }
 }
@@ -873,6 +906,45 @@ void MainWindow::select_all()
 void MainWindow::unselect_all()
 {
     impl_->get_selection()->unselect_all();
+}
+
+void MainWindow::select_torrents_by_id(std::unordered_set<tr_torrent_id_t> const& ids)
+{
+    if (ids.empty())
+    {
+        return;
+    }
+
+#if GTKMM_CHECK_VERSION(4, 0, 0)
+    auto const selection = impl_->get_selection();
+    auto const model = selection->get_model();
+
+    selection->unselect_all();
+
+    for (guint i = 0, n = model->get_n_items(); i < n; ++i)
+    {
+        if (auto const torrent = gtr_ptr_dynamic_cast<Torrent>(model->get_object(i));
+            torrent != nullptr && ids.find(torrent->get_id()) != ids.end())
+        {
+            selection->select_item(i, false);
+        }
+    }
+#else
+    static auto const& self_col = Torrent::get_columns().self;
+    auto const selection = impl_->get_selection();
+    auto const model = selection->get_model();
+
+    selection->unselect_all();
+
+    for (auto const& row : model->children())
+    {
+        if (auto const torrent = row.get_value(self_col);
+            torrent != nullptr && ids.find(torrent->get_id()) != ids.end())
+        {
+            selection->select(model->get_path(row));
+        }
+    }
+#endif
 }
 
 void MainWindow::set_busy(bool isBusy)

@@ -58,5 +58,6 @@ std::vector<std::string> gtr_pref_strv_get(tr_quark key);
 std::string gtr_pref_string_get(tr_quark key);
 void gtr_pref_string_set(tr_quark key, std::string_view value);
 
-void gtr_pref_save(tr_session* /*session*/);
+void gtr_pref_save(tr_session* session);
+void gtr_pref_save_client_only();
 tr_variant& gtr_pref_get_all();

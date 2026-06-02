@@ -48,6 +48,26 @@ FreeSpaceLabel::Impl::~Impl()
 
 bool FreeSpaceLabel::Impl::on_freespace_timer()
 {
+    if (core_->is_remote())
+    {
+        if (dir_.empty())
+        {
+            return true;
+        }
+
+        core_->get_remote_free_space(
+            dir_,
+            [this](int64_t const bytes)
+            {
+                auto const text = bytes >= 0 ?
+                    fmt::format(fmt::runtime(_("{disk_space} free")), fmt::arg("disk_space", tr_strlsize(static_cast<uint64_t>(bytes)))) :
+                    std::string{ _("Unknown") };
+                label_.set_markup(fmt::format("<i>{:s}</i>", text));
+            });
+
+        return true;
+    }
+
     if (core_->get_session() == nullptr)
     {
         return false;

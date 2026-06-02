@@ -5,13 +5,11 @@
 #pragma once
 
 #include "GtkCompat.h"
-#include "Prefs.h"
 #include "Torrent.h"
 
 #include <libtransmission-app/favicon-cache.h>
 
 #include <libtransmission/transmission.h>
-#include <libtransmission/serializer.h>
 #include <libtransmission/variant.h>
 
 #include <gdkmm/pixbuf.h>
@@ -24,11 +22,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
+
 
 class Session : public Glib::Object
 {
@@ -58,6 +58,7 @@ public:
     ~Session() override;
 
     static Glib::RefPtr<Session> create(tr_session* session);
+    static Glib::RefPtr<Session> create_remote();
 
     tr_session* close();
 
@@ -68,16 +69,33 @@ public:
 
     tr_session* get_session() const;
 
+    [[nodiscard]] bool is_remote() const noexcept;
+
+    [[nodiscard]] bool get_remote_stats(tr_session_stats& current, tr_session_stats& cumulative) const noexcept;
+
+    [[nodiscard]] int get_remote_blocklist_size() const noexcept;
+
+    void get_remote_free_space(std::string const& path, std::function<void(int64_t bytes)> callback);
+
+    void refresh_remote_prefs();
+
+    void fetch_magnet_link(tr_torrent_id_t id, std::function<void(std::string const&)> callback);
+
     size_t get_active_torrent_count() const;
 
     size_t get_torrent_count() const;
 
     tr_torrent* find_torrent(tr_torrent_id_t id) const;
 
-    // TODO(c++20) std::span
-    [[nodiscard]] std::vector<tr_torrent*> find_torrents(std::vector<tr_torrent_id_t> const& ids) const;
+    Glib::RefPtr<Torrent> find_torrent_ref(tr_torrent_id_t id) const;
 
-    tr::app::FaviconCache<Glib::RefPtr<Gdk::Pixbuf>>& favicon_cache() const;
+    void fetch_torrent_properties(
+        std::vector<tr_torrent_id_t> const& ids,
+        std::function<void(tr_variant&&)> callback) const;
+
+    void torrent_set_location(std::vector<tr_torrent_id_t> const& ids, std::string_view path, bool move);
+
+    transmission::app::FaviconCache<Glib::RefPtr<Gdk::Pixbuf>>& favicon_cache() const;
 
     /******
     *******
@@ -104,6 +122,9 @@ public:
     /** @brief Add a torrent.
         @param ctor this function assumes ownership of the ctor */
     void add_ctor(tr_ctor* ctor);
+
+    /** Add a torrent to a remote daemon using ctor settings (options dialog). */
+    void add_torrent_from_ctor(tr_ctor* ctor, bool do_start, bool delete_source, tr_priority_t priority);
 
     /** Add a torrent. */
     void add_torrent(Glib::RefPtr<Torrent> const& torrent, bool do_notify);
@@ -135,16 +156,10 @@ public:
     ***  Set a preference value, save the prefs file, and emit the "prefs-changed" signal
     **/
 
-    template<typename T>
-    void set_pref(tr_quark const key, T const& val)
-    {
-        if (gtr_pref_get<T>(key) != val)
-        {
-            gtr_pref_set<T>(key, val);
-            signal_prefs_changed().emit(key);
-            gtr_pref_save(get_session());
-        }
-    }
+    void set_pref(tr_quark key, std::string const& val);
+    void set_pref(tr_quark key, bool val);
+    void set_pref(tr_quark key, int val);
+    void set_pref(tr_quark key, double val);
 
     // ---
 
@@ -174,9 +189,13 @@ public:
 
     void blocklist_update();
 
-    void exec(tr_quark method, tr_variant&& params);
+    void exec(tr_quark method, tr_variant const& params);
 
     void open_folder(tr_torrent_id_t torrent_id) const;
+
+    void set_selection_helpers(
+        std::function<std::unordered_set<tr_torrent_id_t>()> get_selected,
+        std::function<void(std::unordered_set<tr_torrent_id_t> const&)> restore_selected);
 
     sigc::signal<void(ErrorCode, Glib::ustring const&)>& signal_add_error();
     sigc::signal<void(tr_ctor*)>& signal_add_prompt();
@@ -188,6 +207,7 @@ public:
 
 protected:
     explicit Session(tr_session* session);
+    explicit Session(bool remote);
 
 private:
     class Impl;

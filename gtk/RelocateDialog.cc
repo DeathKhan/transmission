@@ -138,6 +138,16 @@ void RelocateDialog::Impl::onResponse(int response)
 
         do_move_ = move_tb_->get_active();
 
+        targetLocation = location;
+        gtr_save_recent_dir("relocate", core_, location);
+
+        if (core_->is_remote())
+        {
+            core_->torrent_set_location(torrent_ids_, location, do_move_);
+            dialog_.close();
+            return;
+        }
+
         /* pop up a dialog saying that the work is in progress */
         message_dialog_ = std::make_unique<Gtk::MessageDialog>(
             dialog_,
@@ -149,12 +159,6 @@ void RelocateDialog::Impl::onResponse(int response)
         message_dialog_->set_secondary_text(_("This may take a moment…"));
         message_dialog_->set_response_sensitive(TR_GTK_RESPONSE_TYPE(CLOSE), false);
         message_dialog_->show();
-
-        /* remember this location for the next torrent */
-        targetLocation = location;
-
-        /* remember this location so that it can be the default next time */
-        gtr_save_recent_dir("relocate", core_, location);
 
         /* start the move and periodically check its status */
         done_ = TR_LOC_DONE;

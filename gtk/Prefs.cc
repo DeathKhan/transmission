@@ -9,11 +9,14 @@
 
 #include <libtransmission-app/display-modes.h>
 
+#include <libtransmission/api-compat.h>
 #include <libtransmission/transmission.h>
 #include <libtransmission/serializer.h>
 #include <libtransmission/variant.h>
 
 #include <glibmm/miscutils.h>
+
+#include <fmt/format.h>
 
 #include <string>
 #include <string_view>
@@ -79,6 +82,14 @@ std::string gl_confdir;
     map.try_emplace(TR_KEY_trash_can_enabled, true);
     map.try_emplace(TR_KEY_watch_dir, dir);
     map.try_emplace(TR_KEY_watch_dir_enabled, false);
+    map.try_emplace(TR_KEY_remote_session_enabled, true);
+    map.try_emplace(TR_KEY_remote_session_host, "127.0.0.1"sv);
+    map.try_emplace(TR_KEY_remote_session_https, false);
+    map.try_emplace(TR_KEY_remote_session_password, ""sv);
+    map.try_emplace(TR_KEY_remote_session_port, 9091);
+    map.try_emplace(TR_KEY_remote_session_requires_authentication, true);
+    map.try_emplace(TR_KEY_remote_session_url_base_path, "/transmission/"sv);
+    map.try_emplace(TR_KEY_remote_session_username, "transmission"sv);
     return tr_variant{ std::move(map) };
 }
 
@@ -197,4 +208,18 @@ void gtr_pref_string_set(tr_quark const key, std::string_view value)
 void gtr_pref_save(tr_session* session)
 {
     tr_sessionSaveSettings(session, gl_confdir, getPrefs());
+}
+
+void gtr_pref_save_client_only()
+{
+    auto filename = fmt::format("{}/settings.json", gl_confdir);
+    auto settings = tr_sessionGetDefaultSettings();
+    if (auto file_settings = tr_variant_serde::json().parse_file(filename); file_settings)
+    {
+        libtransmission::api_compat::convert_incoming_data(*file_settings);
+        settings.merge(*file_settings);
+    }
+    settings.merge(getPrefs());
+    libtransmission::api_compat::convert_outgoing_data(settings);
+    tr_variant_serde::json().to_file(settings, filename);
 }

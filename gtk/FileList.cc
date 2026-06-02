@@ -111,6 +111,8 @@ public:
     ~Impl();
 
     void set_torrent(tr_torrent_id_t torrent_id);
+    void load_from_rpc(tr_torrent_id_t torrent_id, tr_variant::Vector const& files, tr_variant::Vector const* file_stats);
+    void update_from_rpc(tr_variant::Vector const& files, tr_variant::Vector const* file_stats);
     void reset_torrent();
 
 private:
@@ -138,6 +140,8 @@ private:
     Gtk::TreeView* view_ = nullptr;
     Glib::RefPtr<Gtk::TreeStore> store_;
     tr_torrent_id_t torrent_id_ = {};
+    bool is_rpc_view_ = false;
+    size_t rpc_file_count_ = 0;
     sigc::connection timeout_tag_;
     std::queue<sigc::connection> rename_done_tags_;
 };
@@ -145,6 +149,8 @@ private:
 void FileList::Impl::clearData()
 {
     torrent_id_ = -1;
+    is_rpc_view_ = false;
+    rpc_file_count_ = 0;
 
     timeout_tag_.disconnect();
 }
@@ -476,6 +482,124 @@ struct row_struct
 
 using FileRowNode = Glib::NodeTree<row_struct>;
 
+struct rpc_build_data
+{
+    Glib::RefPtr<Gtk::TreeStore> store;
+    tr_variant::Vector const* file_stats = nullptr;
+    Gtk::TreeStore::iterator parent;
+    bool has_parent = false;
+};
+
+bool aggregateRpcFilesForeach(Gtk::TreeModel::iterator const& iter)
+{
+    bool const is_file = iter->children().empty();
+
+    if (is_file)
+    {
+        return false;
+    }
+
+    auto new_enabled = int{ NOT_SET };
+    auto new_priority = int{ NOT_SET };
+    auto new_size = uint64_t{ 0 };
+    auto new_have = uint64_t{ 0 };
+
+    for (auto const& child : iter->children())
+    {
+        auto const child_size = child[file_cols.size];
+        auto const child_have = child[file_cols.have];
+        auto const child_priority = child[file_cols.priority];
+        auto const child_enabled = child[file_cols.enabled];
+
+        if (child_enabled != static_cast<int>(false) && child_enabled != NOT_SET)
+        {
+            new_size += child_size;
+            new_have += child_have;
+        }
+
+        if (new_enabled == NOT_SET)
+        {
+            new_enabled = child_enabled;
+        }
+        else if (new_enabled != child_enabled)
+        {
+            new_enabled = MIXED;
+        }
+
+        if (new_priority == NOT_SET)
+        {
+            new_priority = child_priority;
+        }
+        else if (new_priority != child_priority)
+        {
+            new_priority = MIXED;
+        }
+    }
+
+    auto const new_progress = new_size != 0 ? static_cast<int>(100.0 * new_have / new_size) : 0;
+
+    (*iter)[file_cols.enabled] = new_enabled;
+    (*iter)[file_cols.priority] = new_priority;
+    (*iter)[file_cols.size] = new_size;
+    (*iter)[file_cols.size_str] = new_size > 0 ? Glib::ustring{ tr_strlsize(new_size) } : Glib::ustring{};
+    (*iter)[file_cols.have] = new_have;
+    (*iter)[file_cols.prog] = std::clamp(new_progress, 0, 100);
+
+    return false;
+}
+
+void buildRpcTree(FileRowNode& node, rpc_build_data& build, bool const is_toplevel)
+{
+    auto const& child_data = node.data();
+    bool const isLeaf = node.child_count() == 0;
+
+    auto const mime_type = isLeaf ? tr_get_mime_type_for_filename(child_data.name.raw()) : DirectoryMimeType;
+    auto const icon = gtr_get_mime_type_icon(mime_type);
+
+    int priority = isLeaf ? TR_PRI_NORMAL : NOT_SET;
+    int enabled = isLeaf ? static_cast<int>(true) : NOT_SET;
+    uint64_t have = 0;
+    uint64_t const length = isLeaf ? child_data.length : 0;
+
+    if (isLeaf && build.file_stats != nullptr && child_data.index >= 0 &&
+        static_cast<size_t>(child_data.index) < build.file_stats->size())
+    {
+        if (auto* const stat = (*build.file_stats)[static_cast<size_t>(child_data.index)].get_if<tr_variant::Map>())
+        {
+            priority = static_cast<int>(stat->value_if<int64_t>(TR_KEY_priority).value_or(TR_PRI_NORMAL));
+            enabled = static_cast<int>(stat->value_if<bool>(TR_KEY_wanted).value_or(true));
+            have = static_cast<uint64_t>(stat->value_if<int64_t>(TR_KEY_bytes_completed).value_or(0));
+        }
+    }
+
+    auto const prog = length > 0 ? static_cast<int>(100.0 * have / length) : 0;
+    auto name_esc = Glib::Markup::escape_text(child_data.name);
+
+    auto const child_iter = is_toplevel ? build.store->append() : build.store->append(build.parent->children());
+    // Use 0 as sentinel for folder rows; leaf index values are always >= 0 from the file list
+    (*child_iter)[file_cols.index] = child_data.index >= 0 ? static_cast<unsigned int>(child_data.index) : 0U;
+    (*child_iter)[file_cols.label] = child_data.name;
+    (*child_iter)[file_cols.label_esc] = name_esc;
+    (*child_iter)[file_cols.size] = length;
+    (*child_iter)[file_cols.size_str] = isLeaf ? Glib::ustring{ tr_strlsize(length) } : Glib::ustring{};
+    (*child_iter)[file_cols.have] = have;
+    (*child_iter)[file_cols.prog] = std::clamp(prog, 0, 100);
+    (*child_iter)[file_cols.icon] = icon;
+    (*child_iter)[file_cols.priority] = priority;
+    (*child_iter)[file_cols.enabled] = enabled;
+
+    if (!isLeaf)
+    {
+        auto b = build;
+        b.parent = child_iter;
+        b.has_parent = true;
+        // Use CHILDREN_FIRST so nodes iterate in insertion order (we append)
+        node.foreach (
+            [&b](auto& child_node) { buildRpcTree(child_node, b, false); },
+            TR_GLIB_NODE_TREE_TRAVERSE_FLAGS(FileRowNode, ALL));
+    }
+}
+
 void buildTree(FileRowNode& node, build_data& build)
 {
     auto const& child_data = node.data();
@@ -511,6 +635,11 @@ void buildTree(FileRowNode& node, build_data& build)
 void FileList::set_torrent(tr_torrent_id_t torrent_id)
 {
     impl_->set_torrent(torrent_id);
+}
+
+void FileList::load_from_rpc(tr_torrent_id_t const torrent_id, tr_variant::Vector const& files, tr_variant::Vector const* const file_stats)
+{
+    impl_->load_from_rpc(torrent_id, files, file_stats);
 }
 
 struct PairHash
@@ -607,6 +736,131 @@ void FileList::Impl::reset_torrent()
 
     store_ = Gtk::TreeStore::create(file_cols);
     view_->set_model(store_);
+}
+
+void FileList::Impl::update_from_rpc(tr_variant::Vector const& files, tr_variant::Vector const* const file_stats)
+{
+    if (!is_rpc_view_ || store_ == nullptr)
+    {
+        return;
+    }
+
+    gtr_tree_model_foreach_postorder(
+        store_,
+        [file_stats](Gtk::TreeModel::iterator const& iter)
+        {
+            if (!iter->children().empty())
+            {
+                return false;
+            }
+
+            auto const index = static_cast<int>(iter->get_value(file_cols.index));
+            if (index < 0 || file_stats == nullptr || static_cast<size_t>(index) >= file_stats->size())
+            {
+                return false;
+            }
+
+            auto* const stat = (*file_stats)[static_cast<size_t>(index)].get_if<tr_variant::Map>();
+            if (stat == nullptr)
+            {
+                return false;
+            }
+
+            auto const priority = static_cast<int>(stat->value_if<int64_t>(TR_KEY_priority).value_or(TR_PRI_NORMAL));
+            auto const enabled = static_cast<int>(stat->value_if<bool>(TR_KEY_wanted).value_or(true));
+            auto const have = static_cast<uint64_t>(stat->value_if<int64_t>(TR_KEY_bytes_completed).value_or(0));
+            auto const length = iter->get_value(file_cols.size);
+            auto const prog = length > 0 ? static_cast<int>(100.0 * have / length) : 0;
+
+            (*iter)[file_cols.priority] = priority;
+            (*iter)[file_cols.enabled] = enabled;
+            (*iter)[file_cols.have] = have;
+            (*iter)[file_cols.prog] = std::clamp(prog, 0, 100);
+
+            return false;
+        });
+
+    gtr_tree_model_foreach_postorder(
+        store_,
+        [](Gtk::TreeModel::iterator const& iter) { return aggregateRpcFilesForeach(iter); });
+}
+
+void FileList::Impl::load_from_rpc(
+    tr_torrent_id_t const torrent_id,
+    tr_variant::Vector const& files,
+    tr_variant::Vector const* const file_stats)
+{
+    if (is_rpc_view_ && torrent_id_ == torrent_id && store_ != nullptr && !store_->children().empty() &&
+        files.size() == rpc_file_count_)
+    {
+        update_from_rpc(files, file_stats);
+        return;
+    }
+
+    clearData();
+
+    store_ = Gtk::TreeStore::create(file_cols);
+    torrent_id_ = torrent_id;
+    is_rpc_view_ = true;
+    rpc_file_count_ = files.size();
+
+    auto root = FileRowNode{};
+
+    auto nodes = std::unordered_map<std::pair<FileRowNode* /*parent*/, std::string_view>, FileRowNode*, PairHash>{};
+
+    for (size_t i = 0; i < files.size(); ++i)
+    {
+        auto* const file_map = files[i].get_if<tr_variant::Map>();
+        if (file_map == nullptr)
+        {
+            continue;
+        }
+
+        auto* parent = &root;
+        auto path = file_map->value_if<std::string_view>(TR_KEY_name).value_or(""sv);
+        auto const length = static_cast<uint64_t>(file_map->value_if<int64_t>(TR_KEY_length).value_or(0));
+
+        auto token = std::string_view{};
+        while (tr_strv_sep(&path, &token, '/'))
+        {
+            auto*& node = nodes[std::make_pair(parent, token)];
+
+            if (node == nullptr)
+            {
+                auto const is_leaf = std::empty(path);
+
+                node = parent->append_data({});
+                auto& node_data = node->data();
+                node_data.name = std::string{ token };
+                node_data.index = is_leaf ? static_cast<int>(i) : -1;
+                node_data.length = is_leaf ? length : 0;
+            }
+
+            parent = node;
+        }
+    }
+
+    rpc_build_data build;
+    build.store = store_;
+    build.file_stats = file_stats;
+
+    root.foreach (
+        [&build](auto& child_node) { buildRpcTree(child_node, build, true); },
+        TR_GLIB_NODE_TREE_TRAVERSE_FLAGS(FileRowNode, ALL));
+
+    gtr_tree_model_foreach_postorder(
+        store_,
+        [](Gtk::TreeModel::iterator const& iter) { return aggregateRpcFilesForeach(iter); });
+
+    // Sort alphabetically on the unattached model — avoids resort flicker when the
+    // view first renders and prevents the gtk_css_node_insert_after assertion warnings.
+    store_->set_sort_column(file_cols.label, TR_GTK_SORT_TYPE(ASCENDING));
+
+    view_->set_model(store_);
+
+    // Expand all rows so the user sees the full tree immediately.
+    // A single level expand (depth 0 only) would leave nested folders collapsed.
+    view_->expand_all();
 }
 
 /***
@@ -732,50 +986,105 @@ bool FileList::Impl::onViewPathToggled(Gtk::TreeViewColumn* col, Gtk::TreeModel:
         return false;
     }
 
-    bool handled = false;
-
     auto const cid = col->get_sort_column_id();
-    auto* tor = core_->find_torrent(torrent_id_);
-
-    if (tor != nullptr && (cid == file_cols.priority.index() || cid == file_cols.enabled.index()))
+    if (cid != file_cols.priority.index() && cid != file_cols.enabled.index())
     {
-        auto const indexBuf = getActiveFilesForPath(path);
+        return false;
+    }
 
-        auto const iter = store_->get_iter(path);
+    auto const indexBuf = getActiveFilesForPath(path);
+    if (indexBuf.empty())
+    {
+        return false;
+    }
+
+    auto const iter = store_->get_iter(path);
+
+    // --- RPC (remote) path ---
+    if (is_rpc_view_)
+    {
+        auto indices = tr_variant::Vector{};
+        indices.reserve(indexBuf.size());
+        for (auto const idx : indexBuf)
+        {
+            indices.emplace_back(static_cast<int64_t>(idx));
+        }
+
+        auto params = tr_variant::Map{ 2U };
+        params[TR_KEY_ids] = Session::to_variant(std::vector<tr_torrent_id_t>{ torrent_id_ });
 
         if (cid == file_cols.priority.index())
         {
             auto const old_priority = iter->get_value(file_cols.priority);
-            auto new_priority = TR_PRI_NORMAL;
+            int new_priority = TR_PRI_NORMAL;
+            tr_quark rpc_key = TR_KEY_priority_normal;
 
             switch (old_priority)
             {
             case TR_PRI_NORMAL:
                 new_priority = TR_PRI_HIGH;
+                rpc_key = TR_KEY_priority_high;
                 break;
-
             case TR_PRI_HIGH:
                 new_priority = TR_PRI_LOW;
+                rpc_key = TR_KEY_priority_low;
                 break;
-
             default:
                 new_priority = TR_PRI_NORMAL;
+                rpc_key = TR_KEY_priority_normal;
                 break;
             }
 
-            tr_torrentSetFilePriorities(tor, indexBuf.data(), indexBuf.size(), new_priority);
+            (*iter)[file_cols.priority] = new_priority;
+            params[rpc_key] = std::move(indices);
         }
         else
         {
-            auto const enabled = iter->get_value(file_cols.enabled);
-            tr_torrentSetFileDLs(tor, indexBuf.data(), indexBuf.size(), enabled == static_cast<int>(false));
+            auto const old_enabled = iter->get_value(file_cols.enabled);
+            bool const new_enabled = old_enabled == static_cast<int>(false);
+            (*iter)[file_cols.enabled] = static_cast<int>(new_enabled);
+            params[new_enabled ? TR_KEY_files_wanted : TR_KEY_files_unwanted] = std::move(indices);
         }
 
-        refresh();
-        handled = true;
+        core_->exec(TR_KEY_torrent_set, std::move(params));
+        return true;
     }
 
-    return handled;
+    // --- Local session path ---
+    auto* tor = core_->find_torrent(torrent_id_);
+    if (tor == nullptr)
+    {
+        return false;
+    }
+
+    if (cid == file_cols.priority.index())
+    {
+        auto const old_priority = iter->get_value(file_cols.priority);
+        auto new_priority = TR_PRI_NORMAL;
+
+        switch (old_priority)
+        {
+        case TR_PRI_NORMAL:
+            new_priority = TR_PRI_HIGH;
+            break;
+        case TR_PRI_HIGH:
+            new_priority = TR_PRI_LOW;
+            break;
+        default:
+            new_priority = TR_PRI_NORMAL;
+            break;
+        }
+
+        tr_torrentSetFilePriorities(tor, indexBuf.data(), indexBuf.size(), new_priority);
+    }
+    else
+    {
+        auto const enabled = iter->get_value(file_cols.enabled);
+        tr_torrentSetFileDLs(tor, indexBuf.data(), indexBuf.size(), enabled == static_cast<int>(false));
+    }
+
+    refresh();
+    return true;
 }
 
 /**
@@ -962,12 +1271,16 @@ FileList::Impl::Impl(
 #else
         icon_rend->property_stock_size() = Gtk::ICON_SIZE_MENU;
 #endif
-        /* add text renderer */
+        /* add text renderer — rename is local-session only */
         auto* text_rend = Gtk::make_managed<Gtk::CellRendererText>();
-        text_rend->property_editable() = true;
+        bool const allow_rename = !core_->is_remote();
+        text_rend->property_editable() = allow_rename;
         text_rend->property_ellipsize() = TR_PANGO_ELLIPSIZE_MODE(END);
         text_rend->property_scale() = FileAndSizeScale;
-        text_rend->signal_edited().connect(sigc::mem_fun(*this, &Impl::cell_edited_callback));
+        if (allow_rename)
+        {
+            text_rend->signal_edited().connect(sigc::mem_fun(*this, &Impl::cell_edited_callback));
+        }
         col->pack_start(*text_rend, true);
         col->set_spacing(GUI_PAD_SMALL);
         col->add_attribute(text_rend->property_text(), file_cols.label);

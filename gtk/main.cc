@@ -35,9 +35,9 @@
 
 namespace
 {
-auto const* const AppConfigDirName = "transmission";
-auto const* const AppTranslationDomainName = "transmission-gtk";
-auto const* const AppName = "transmission-gtk";
+auto const* const AppConfigDirName = "transmission-client-gtk";
+auto const* const AppTranslationDomainName = "transmission-client-gtk";
+auto const* const AppName = "transmission-client-gtk";
 
 Glib::OptionEntry create_option_entry(Glib::ustring const& long_name, gchar short_name, Glib::ustring const& description)
 {
@@ -79,7 +79,7 @@ int main(int argc, char** argv)
     /* init glib/gtk */
     Gio::init();
     Glib::init();
-    Glib::set_application_name(_("Transmission"));
+    Glib::set_application_name(_("Transmission Client"));
 
     /* Workaround "..." */
     Gio::File::create_for_path(".");
