@@ -9,7 +9,6 @@
 #include <gtkmm/builder.h>
 #include <gtkmm/dialog.h>
 #include <gtkmm/entry.h>
-#include <gtkmm/filechoosernative.h>
 #include <gtkmm/window.h>
 
 #include <memory>
@@ -38,23 +37,7 @@ private:
     void onOpenURLResponse(int response, Gtk::Entry const& entry, Glib::RefPtr<Session> const& core);
 };
 
-class TorrentFileChooserDialog : public Gtk::FileChooserNative
-{
-public:
-    TorrentFileChooserDialog(TorrentFileChooserDialog&&) = delete;
-    TorrentFileChooserDialog(TorrentFileChooserDialog const&) = delete;
-    TorrentFileChooserDialog& operator=(TorrentFileChooserDialog&&) = delete;
-    TorrentFileChooserDialog& operator=(TorrentFileChooserDialog const&) = delete;
-    ~TorrentFileChooserDialog() override = default;
-
-    static std::unique_ptr<TorrentFileChooserDialog> create(Gtk::Window& parent, Glib::RefPtr<Session> const& core);
-
-protected:
-    TorrentFileChooserDialog(Gtk::Window& parent, Glib::RefPtr<Session> const& core);
-
-private:
-    void onOpenDialogResponse(int response, Glib::RefPtr<Session> const& core);
-};
+void torrent_open_chooser_show(Gtk::Window& parent, Glib::RefPtr<Session> const& core);
 
 class OptionsDialog : public Gtk::Dialog
 {

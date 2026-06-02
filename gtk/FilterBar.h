@@ -5,14 +5,11 @@
 
 #pragma once
 
-#include "GtkCompat.h"
-
 #include <giomm/listmodel.h>
 #include <glibmm/extraclassinit.h>
 #include <glibmm/refptr.h>
 #include <gtkmm/box.h>
 #include <gtkmm/builder.h>
-#include <gtkmm/treemodel.h>
 
 #include <memory>
 
@@ -33,7 +30,7 @@ class FilterBar
     , public Gtk::Box
 {
 public:
-    using Model = IF_GTKMM4(Gio::ListModel, Gtk::TreeModel);
+    using Model = Gio::ListModel;
 
 public:
     FilterBar();

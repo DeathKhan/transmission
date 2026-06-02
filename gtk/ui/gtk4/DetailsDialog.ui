@@ -472,11 +472,8 @@
                             <property name="focusable">1</property>
                             <property name="has-frame">1</property>
                             <property name="child">
-                              <object class="GtkTreeView" id="webseeds_view">
+                              <object class="GtkColumnView" id="webseeds_view">
                                 <property name="focusable">1</property>
-                                <child internal-child="selection">
-                                  <object class="GtkTreeSelection" id="webseeds_view_selection"/>
-                                </child>
                               </object>
                             </property>
                           </object>
@@ -486,11 +483,8 @@
                             <property name="focusable">1</property>
                             <property name="has-frame">1</property>
                             <property name="child">
-                              <object class="GtkTreeView" id="peers_view">
+                              <object class="GtkColumnView" id="peers_view">
                                 <property name="focusable">1</property>
-                                <child internal-child="selection">
-                                  <object class="GtkTreeSelection" id="peers_view_selection"/>
-                                </child>
                               </object>
                             </property>
                           </object>
@@ -532,12 +526,8 @@
                             <property name="focusable">1</property>
                             <property name="has-frame">1</property>
                             <property name="child">
-                              <object class="GtkTreeView" id="trackers_view">
+                              <object class="GtkListView" id="trackers_view">
                                 <property name="focusable">1</property>
-                                <property name="headers-visible">0</property>
-                                <child internal-child="selection">
-                                  <object class="GtkTreeSelection"/>
-                                </child>
                               </object>
                             </property>
                           </object>
@@ -612,11 +602,8 @@
                         <property name="focusable">1</property>
                         <property name="has-frame">1</property>
                         <property name="child">
-                          <object class="GtkTreeView" id="files_view">
+                          <object class="GtkListView" id="files_view">
                             <property name="focusable">1</property>
-                            <child internal-child="selection">
-                              <object class="GtkTreeSelection"/>
-                            </child>
                           </object>
                         </property>
                       </object>
@@ -730,7 +717,7 @@
                               </object>
                             </child>
                             <child>
-                              <object class="GtkComboBox" id="priority_combo">
+                              <object class="GtkDropDown" id="priority_combo">
                                 <property name="hexpand">1</property>
                                 <layout>
                                   <property name="column">1</property>
@@ -785,7 +772,7 @@
                                 <property name="hexpand">1</property>
                                 <property name="spacing">6</property>
                                 <child>
-                                  <object class="GtkComboBox" id="ratio_limit_combo">
+                                  <object class="GtkDropDown" id="ratio_limit_combo">
                                     <property name="hexpand">1</property>
                                   </object>
                                 </child>
@@ -805,7 +792,7 @@
                                 <property name="hexpand">1</property>
                                 <property name="spacing">6</property>
                                 <child>
-                                  <object class="GtkComboBox" id="idle_limit_combo">
+                                  <object class="GtkDropDown" id="idle_limit_combo">
                                     <property name="hexpand">1</property>
                                   </object>
                                 </child>

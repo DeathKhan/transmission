@@ -216,10 +216,10 @@ void gtr_pref_save_client_only()
     auto settings = tr_sessionGetDefaultSettings();
     if (auto file_settings = tr_variant_serde::json().parse_file(filename); file_settings)
     {
-        libtransmission::api_compat::convert_incoming_data(*file_settings);
+        tr::api_compat::convert_incoming_data(*file_settings);
         settings.merge(*file_settings);
     }
     settings.merge(getPrefs());
-    libtransmission::api_compat::convert_outgoing_data(settings);
+    tr::api_compat::convert_outgoing_data(settings);
     tr_variant_serde::json().to_file(settings, filename);
 }

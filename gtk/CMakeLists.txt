@@ -2,6 +2,14 @@ find_program(APPSTREAM appstreamcli)
 
 set(TCG_TARGET transmission-client-gtk)
 
+if(NOT GTK_VERSION EQUAL 4)
+    message(FATAL_ERROR "${TCG_TARGET} requires GTK 4 (configure with -DUSE_GTK_VERSION=4)")
+endif()
+
+if(NOT DEFINED ENABLE_DEPRECATED)
+    set(ENABLE_DEPRECATED OFF)
+endif()
+
 add_executable(${TCG_TARGET} WIN32)
 
 target_sources(${TCG_TARGET}
@@ -13,14 +21,22 @@ target_sources(${TCG_TARGET}
         Application.h
         DetailsDialog.cc
         DetailsDialog.h
+        DetailsDialogRows.cc
+        DetailsDialogRows.h
         Dialogs.cc
         Dialogs.h
         DynamicPropertyStore.h
+        EnumDropdown.cc
+        EnumDropdown.h
         FaviconCache.cc
         FileList.cc
         FileList.h
+        FileRowItem.cc
+        FileRowItem.h
         FilterBar.cc
         FilterBar.h
+        FilterBarRows.cc
+        FilterBarRows.h
         FilterBase.h
         FilterBase.hh
         FilterListModel.h
@@ -32,13 +48,17 @@ target_sources(${TCG_TARGET}
         HigWorkarea.h
         IconCache.cc
         IconCache.h
-        ListModelAdapter.cc
-        ListModelAdapter.h
+        DetailsDialogRows.cc
+        DetailsDialogRows.h
+        FileRowItem.cc
+        FileRowItem.h
         main.cc
         MainWindow.cc
         MainWindow.h
         MakeDialog.cc
         MakeDialog.h
+        MessageLogRow.cc
+        MessageLogRow.h
         MessageLogWindow.cc
         MessageLogWindow.h
         Notify.cc
@@ -67,8 +87,6 @@ target_sources(${TCG_TARGET}
         SystemTrayIcon.h
         Torrent.cc
         Torrent.h
-        TorrentCellRenderer.cc
-        TorrentCellRenderer.h
         TorrentFilter.cc
         TorrentFilter.h
         TorrentSorter.cc
@@ -77,29 +95,6 @@ target_sources(${TCG_TARGET}
         Utils.h
         RpcClient.h
         RemotePrefs.h)
-
-tr_allow_compile_if(
-    [=[[GTK_VERSION EQUAL 3]]=]
-        TorrentCellRenderer.cc)
-
-target_sources(${TCG_TARGET}
-    PRIVATE
-        ui/gtk3/AddTrackerDialog.ui
-        ui/gtk3/DetailsDialog.ui
-        ui/gtk3/EditTrackersDialog.ui
-        ui/gtk3/FilterBar.ui
-        ui/gtk3/MainWindow.ui
-        ui/gtk3/MakeDialog.ui
-        ui/gtk3/MakeProgressDialog.ui
-        ui/gtk3/MessageLogWindow.ui
-        ui/gtk3/OptionsDialog.ui
-        ui/gtk3/PrefsDialog.ui
-        ui/gtk3/RelocateDialog.ui
-        ui/gtk3/StatsDialog.ui
-        ui/gtk3/TorrentUrlChooserDialog.ui)
-
-source_group(Ui/GTK3
-    REGULAR_EXPRESSION [[ui/gtk3/.*\.ui$]])
 
 target_sources(${TCG_TARGET}
     PRIVATE
@@ -137,11 +132,7 @@ if(WITH_APPINDICATOR)
     endif()
 endif()
 
-if(GTK_VERSION EQUAL 4)
-    set(UI_SUBDIR ui/gtk4)
-else()
-    set(UI_SUBDIR ui/gtk3)
-endif()
+set(UI_SUBDIR ui/gtk4)
 
 tr_target_glib_resources(${TCG_TARGET}
     transmission.gresource.xml
@@ -170,6 +161,8 @@ target_compile_definitions(${TCG_TARGET}
         TRANSMISSIONLOCALEDIR="${CMAKE_INSTALL_FULL_LOCALEDIR}"
         GETTEXT_PACKAGE="${TCG_TARGET}"
         $<$<BOOL:${ENABLE_UTP}>:WITH_UTP>)
+
+# ENABLE_DEPRECATED=OFF is the default; the GTK client no longer uses GtkTreeView/ComboBox.
 
 if(NOT ENABLE_DEPRECATED)
     target_compile_definitions(${TCG_TARGET}

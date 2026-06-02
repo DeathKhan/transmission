@@ -7,7 +7,6 @@
 #include "Actions.h"
 #include "FilterBar.h"
 #include "GtkCompat.h"
-#include "ListModelAdapter.h"
 #include "Prefs.h"
 #include "PrefsDialog.h"
 #include "Session.h"
@@ -61,7 +60,7 @@
 
 using namespace std::string_literals;
 using namespace std::string_view_literals;
-using namespace libtransmission::Values;
+using namespace tr::Values;
 
 using VariantInt = Glib::Variant<int>;
 using VariantDouble = Glib::Variant<double>;
@@ -384,8 +383,12 @@ void MainWindow::Impl::syncAltSpeedButton()
             fmt::runtime(
                 b ? _("Click to disable Alternative Speed Limits\n ({download_speed} down, {upload_speed} up)") :
                     _("Click to enable Alternative Speed Limits\n ({download_speed} down, {upload_speed} up)")),
-            fmt::arg("download_speed", Speed{ gtr_pref_int_get(TR_KEY_alt_speed_down), Speed::Units::KByps }.to_string()),
-            fmt::arg("upload_speed", Speed{ gtr_pref_int_get(TR_KEY_alt_speed_up), Speed::Units::KByps }.to_string())));
+            fmt::arg(
+                "download_speed",
+                Speed{ gtr_pref_int_get<size_t>(TR_KEY_alt_speed_down), Speed::Units::KByps }.to_string()),
+            fmt::arg(
+                "upload_speed",
+                Speed{ gtr_pref_int_get<size_t>(TR_KEY_alt_speed_up), Speed::Units::KByps }.to_string())));
 }
 
 void MainWindow::Impl::alt_speed_toggled_cb()
@@ -412,24 +415,28 @@ void MainWindow::Impl::onAltSpeedToggledIdle()
 void MainWindow::Impl::onSpeedToggled(std::string const& action_name, tr_direction dir, bool enabled)
 {
     options_actions_->change_action_state(action_name, VariantInt::create(enabled ? 1 : 0));
-    core_->set_pref(dir == TR_UP ? TR_KEY_speed_limit_up_enabled : TR_KEY_speed_limit_down_enabled, enabled);
+    core_->set_pref(
+        dir == tr_direction::Up ? TR_KEY_speed_limit_up_enabled : TR_KEY_speed_limit_down_enabled,
+        enabled);
 }
 
 void MainWindow::Impl::onSpeedSet(tr_direction dir, int KBps)
 {
-    core_->set_pref(dir == TR_UP ? TR_KEY_speed_limit_up : TR_KEY_speed_limit_down, KBps);
-    core_->set_pref(dir == TR_UP ? TR_KEY_speed_limit_up_enabled : TR_KEY_speed_limit_down_enabled, true);
+    core_->set_pref(dir == tr_direction::Up ? TR_KEY_speed_limit_up : TR_KEY_speed_limit_down, KBps);
+    core_->set_pref(
+        dir == tr_direction::Up ? TR_KEY_speed_limit_up_enabled : TR_KEY_speed_limit_down_enabled,
+        true);
 }
 
 Glib::RefPtr<Gio::MenuModel> MainWindow::Impl::createSpeedMenu(
     Glib::RefPtr<Gio::SimpleActionGroup> const& actions,
     tr_direction dir)
 {
-    auto& info = speed_menu_info_.at(dir);
+    auto& info = speed_menu_info_.at(static_cast<uint8_t>(dir));
 
     auto m = Gio::Menu::create();
 
-    auto const action_name = fmt::format("speed-limit-{}", dir == TR_UP ? "up" : "down");
+    auto const action_name = fmt::format("speed-limit-{}", dir == tr_direction::Up ? "up" : "down");
     auto const full_action_name = fmt::format("{}.{}", OptionsMenuActionGroupName, action_name);
     info.action = actions->add_action_radio_integer(
         action_name,
@@ -475,13 +482,13 @@ Glib::RefPtr<Gio::MenuModel> MainWindow::Impl::createSpeedMenu(
 void MainWindow::Impl::onRatioToggled(std::string const& action_name, bool enabled)
 {
     options_actions_->change_action_state(action_name, VariantInt::create(enabled ? 1 : 0));
-    core_->set_pref(TR_KEY_ratio_limit_enabled, enabled);
+    core_->set_pref(TR_KEY_seed_ratio_limited, enabled);
 }
 
 void MainWindow::Impl::onRatioSet(double ratio)
 {
-    core_->set_pref(TR_KEY_ratio_limit, ratio);
-    core_->set_pref(TR_KEY_ratio_limit_enabled, true);
+    core_->set_pref(TR_KEY_seed_ratio_limit, ratio);
+    core_->set_pref(TR_KEY_seed_ratio_limited, true);
 }
 
 Glib::RefPtr<Gio::MenuModel> MainWindow::Impl::createRatioMenu(Glib::RefPtr<Gio::SimpleActionGroup> const& actions)
@@ -540,8 +547,8 @@ Glib::RefPtr<Gio::MenuModel> MainWindow::Impl::createOptionsMenu()
     auto actions = Gio::SimpleActionGroup::create();
 
     auto section = Gio::Menu::create();
-    section->append_submenu(_("Limit Download Speed"), createSpeedMenu(actions, TR_DOWN));
-    section->append_submenu(_("Limit Upload Speed"), createSpeedMenu(actions, TR_UP));
+    section->append_submenu(_("Limit Download Speed"), createSpeedMenu(actions, tr_direction::Down));
+    section->append_submenu(_("Limit Upload Speed"), createSpeedMenu(actions, tr_direction::Up));
     top->append_section(section);
 
     section = Gio::Menu::create();
@@ -573,21 +580,21 @@ void MainWindow::Impl::onOptionsClicked()
     };
 
     update_menu(
-        speed_menu_info_[TR_DOWN],
-        Speed{ gtr_pref_int_get(TR_KEY_speed_limit_down), Speed::Units::KByps }.to_string(),
+        speed_menu_info_[static_cast<uint8_t>(tr_direction::Down)],
+        Speed{ gtr_pref_int_get<size_t>(TR_KEY_speed_limit_down), Speed::Units::KByps }.to_string(),
         TR_KEY_speed_limit_down_enabled);
 
     update_menu(
-        speed_menu_info_[TR_UP],
-        Speed{ gtr_pref_int_get(TR_KEY_speed_limit_up), Speed::Units::KByps }.to_string(),
+        speed_menu_info_[static_cast<uint8_t>(tr_direction::Up)],
+        Speed{ gtr_pref_int_get<size_t>(TR_KEY_speed_limit_up), Speed::Units::KByps }.to_string(),
         TR_KEY_speed_limit_up_enabled);
 
     update_menu(
         ratio_menu_info_,
         fmt::format(
             fmt::runtime(_("Stop at Ratio ({ratio})")),
-            fmt::arg("ratio", tr_strlratio(gtr_pref_double_get(TR_KEY_ratio_limit)))),
-        TR_KEY_ratio_limit_enabled);
+            fmt::arg("ratio", tr_strlratio(gtr_pref_double_get(TR_KEY_seed_ratio_limit)))),
+        TR_KEY_seed_ratio_limited);
 }
 
 Glib::RefPtr<Gio::MenuModel> MainWindow::Impl::createStatsMenu()
@@ -675,9 +682,11 @@ MainWindow::Impl::Impl(
 {
     /* make the window */
     window.set_title(Glib::get_application_name());
-    window.set_default_size(gtr_pref_int_get(TR_KEY_main_window_width), gtr_pref_int_get(TR_KEY_main_window_height));
+    window.set_default_size(
+        gtr_pref_int_get<int>(TR_KEY_main_window_width),
+        gtr_pref_int_get<int>(TR_KEY_main_window_height));
 #if !GTKMM_CHECK_VERSION(4, 0, 0)
-    window.move(gtr_pref_int_get(TR_KEY_main_window_x), gtr_pref_int_get(TR_KEY_main_window_y));
+    window.move(gtr_pref_int_get<int>(TR_KEY_main_window_x), gtr_pref_int_get<int>(TR_KEY_main_window_y));
 #endif
 
     if (gtr_pref_flag_get(TR_KEY_main_window_is_maximized))
@@ -741,11 +750,10 @@ MainWindow::Impl::Impl(
 
     if (auto* const session = core_->get_session(); session != nullptr)
     {
-        tr_sessionSetAltSpeedFunc(
-            session,
-            [](tr_session* /*s*/, bool /*isEnabled*/, bool /*byUser*/, gpointer p)
-            { Glib::signal_idle().connect_once([p]() { static_cast<Impl*>(p)->onAltSpeedToggledIdle(); }); },
-            this);
+    tr_sessionSetAltSpeedFunc(
+        session,
+        [this](bool const /*is_enabled*/, bool const /*by_user*/)
+        { Glib::signal_idle().connect_once([this]() { onAltSpeedToggledIdle(); }); });
     }
 
     refresh();

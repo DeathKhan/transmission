@@ -10,7 +10,7 @@
 
 #include <glibmm/i18n.h>
 #include <glibmm/ustring.h>
-#include <gtkmm/messagedialog.h>
+#include <gtkmm/alertdialog.h>
 
 #include <fmt/format.h>
 
@@ -46,20 +46,6 @@ void gtr_confirm_remove(
             }
 
             if (torrent->get_active_peer_count() > 0)
-            {
-                ++connected;
-            }
-        }
-        else if (auto* const tor = core->find_torrent(id); tor != nullptr)
-        {
-            tr_stat const* stat = tr_torrentStat(tor);
-
-            if (stat->leftUntilDone != 0)
-            {
-                ++incomplete;
-            }
-
-            if (stat->peersConnected != 0)
             {
                 ++connected;
             }
@@ -118,36 +104,28 @@ void gtr_confirm_remove(
         }
     }
 
-    auto d = std::make_shared<Gtk::MessageDialog>(
+    auto dialog = Gtk::AlertDialog::create(primary_text);
+    dialog->set_detail(secondary_text);
+    dialog->set_buttons({ _("_Cancel"), delete_files ? _("_Delete") : _("_Remove") });
+    dialog->set_cancel_button(0);
+    dialog->set_default_button(0);
+
+    dialog->choose(
         parent,
-        fmt::format("<big><b>{}</b></big>", primary_text),
-        true /*use_markup*/,
-        TR_GTK_MESSAGE_TYPE(WARNING),
-        TR_GTK_BUTTONS_TYPE(NONE),
-        true /*modal*/);
-
-    if (!secondary_text.empty())
-    {
-        d->set_secondary_text(secondary_text, true);
-    }
-
-    d->add_button(_("_Cancel"), TR_GTK_RESPONSE_TYPE(CANCEL));
-    d->add_button(delete_files ? _("_Delete") : _("_Remove"), TR_GTK_RESPONSE_TYPE(ACCEPT));
-    d->set_default_response(TR_GTK_RESPONSE_TYPE(CANCEL));
-
-    d->signal_response().connect(
-        [d, core, torrent_ids, delete_files](int response) mutable
+        [core, torrent_ids, delete_files, dialog](Glib::RefPtr<Gio::AsyncResult>& result)
         {
-            if (response == TR_GTK_RESPONSE_TYPE(ACCEPT))
+            try
             {
-                for (auto const id : torrent_ids)
+                if (dialog->choose_finish(result) == 1)
                 {
-                    core->remove_torrent(id, delete_files);
+                    for (auto const id : torrent_ids)
+                    {
+                        core->remove_torrent(id, delete_files);
+                    }
                 }
             }
-
-            d.reset();
+            catch (Glib::Error const&)
+            {
+            }
         });
-
-    d->show();
 }

@@ -2,6 +2,7 @@
 #include "RpcClient.h"
 
 #include <libtransmission/api-compat.h>
+#include <libtransmission/constants.h>
 #include <libtransmission/rpcimpl.h>
 #include <libtransmission/serializer.h>
 #include <libtransmission/variant.h>
@@ -21,6 +22,8 @@
 
 namespace transmission::client::gtk
 {
+
+namespace api_compat = tr::api_compat;
 
 namespace
 {
@@ -152,7 +155,7 @@ void RpcClient::stop()
     username_.clear();
     password_.clear();
     session_id_.clear();
-    network_style_ = libtransmission::api_compat::Style::Tr4;
+    network_style_ = api_compat::default_style();
 }
 
 void RpcClient::start_local(tr_session* session)
@@ -207,10 +210,10 @@ void RpcClient::exec_local(tr_variant& request, Callback callback)
     tr_rpc_request_exec(
         session_,
         request,
-        [cb = std::move(callback)](tr_session* /*session*/, tr_variant&& response) mutable
+        [cb = std::move(callback)](tr_variant&& response) mutable
         {
             auto owned = tr_variant{ std::move(response) };
-            libtransmission::api_compat::convert_incoming_data(owned);
+            api_compat::convert_incoming_data(owned);
             cb(parse_response_data(owned));
         });
 }
@@ -223,7 +226,7 @@ void RpcClient::exec_remote(tr_variant& request, Callback callback)
         map->try_emplace(TR_KEY_id, id);
     }
 
-    libtransmission::api_compat::convert(request, network_style_);
+    api_compat::convert(request, network_style_);
     auto const body = tr_variant_serde::json().compact().to_string(request);
 
     auto response = RpcResponse{};
@@ -254,7 +257,10 @@ bool RpcClient::post_remote(std::string const& body, RpcResponse& response)
 
     if (!session_id_.empty())
     {
-        soup_message_headers_append(soup_message_get_request_headers(msg), TR_RPC_SESSION_ID_HEADER, session_id_.c_str());
+        soup_message_headers_append(
+            soup_message_get_request_headers(msg),
+            std::string{ TrRpcSessionIdHeader }.c_str(),
+            session_id_.c_str());
     }
 
     if (!username_.empty())
@@ -280,17 +286,20 @@ bool RpcClient::post_remote(std::string const& body, RpcResponse& response)
         return false;
     }
 
-    if (status == SOUP_STATUS_CONFLICT && soup_message_headers_get_one(soup_message_get_response_headers(msg), TR_RPC_SESSION_ID_HEADER))
-    {
-        session_id_ = soup_message_headers_get_one(soup_message_get_response_headers(msg), TR_RPC_SESSION_ID_HEADER);
+    auto* const resp_headers = const_cast<SoupMessageHeaders*>(soup_message_get_response_headers(msg));
+    auto const* const session_header = TrRpcSessionIdHeader.data();
 
-        if (soup_message_headers_get_one(soup_message_get_response_headers(msg), TR_RPC_RPC_VERSION_HEADER))
+    if (status == SOUP_STATUS_CONFLICT && soup_message_headers_get_one(resp_headers, session_header) != nullptr)
+    {
+        session_id_ = soup_message_headers_get_one(resp_headers, session_header);
+
+        if (soup_message_headers_get_one(resp_headers, TrRpcVersionHeader.data()) != nullptr)
         {
-            network_style_ = libtransmission::api_compat::Style::Tr5;
+            network_style_ = api_compat::Style::Tr5;
         }
         else
         {
-            network_style_ = libtransmission::api_compat::Style::Tr4;
+            network_style_ = api_compat::Style::Tr4;
         }
 
         if (bytes != nullptr)
@@ -338,7 +347,7 @@ bool RpcClient::post_remote(std::string const& body, RpcResponse& response)
 
     if (auto var = tr_variant_serde::json().parse(json))
     {
-        libtransmission::api_compat::convert_incoming_data(*var);
+        api_compat::convert_incoming_data(*var);
         response = parse_response_data(*var);
         return true;
     }

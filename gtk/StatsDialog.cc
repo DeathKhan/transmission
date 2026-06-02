@@ -130,29 +130,20 @@ void StatsDialog::Impl::dialogResponse(int response)
 
     if (response == TR_RESPONSE_RESET)
     {
-        auto w = std::make_shared<Gtk::MessageDialog>(
+        gtr_alert_confirm(
             dialog_,
             _("Reset your statistics?"),
-            false,
-            TR_GTK_MESSAGE_TYPE(QUESTION),
-            TR_GTK_BUTTONS_TYPE(NONE),
-            true);
-        w->add_button(_("_Cancel"), TR_GTK_RESPONSE_TYPE(CANCEL));
-        w->add_button(_("_Reset"), TR_RESPONSE_RESET);
-        w->set_secondary_text(
             _("These statistics are for your information only. "
-              "Resetting them doesn't affect the statistics logged by your BitTorrent trackers."));
-        w->signal_response().connect(
-            [this, w](int inner_response) mutable
+              "Resetting them doesn't affect the statistics logged by your BitTorrent trackers."),
+            _("_Reset"),
+            [this](bool const accepted)
             {
-                if (inner_response == TR_RESPONSE_RESET)
+                if (accepted)
                 {
                     tr_sessionClearStats(core_->get_session());
                     updateStats();
                 }
-                w.reset();
             });
-        w->show();
     }
 
     if (response == TR_GTK_RESPONSE_TYPE(CLOSE))

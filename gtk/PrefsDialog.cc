@@ -17,6 +17,7 @@
 #include <libtransmission/transmission.h>
 #include <libtransmission/web-utils.h>
 
+#include <giomm/liststore.h>
 #include <glibmm/date.h>
 #include <glibmm/i18n.h>
 #include <glibmm/main.h>
@@ -25,23 +26,22 @@
 #include <gtkmm/adjustment.h>
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
-#include <gtkmm/cellrenderertext.h>
 #include <gtkmm/checkbutton.h>
-#include <gtkmm/combobox.h>
+#include <gtkmm/dropdown.h>
+#include <gtkmm/editablelabel.h>
 #include <gtkmm/editable.h>
 #include <gtkmm/entry.h>
+#include <gtkmm/eventcontrollerfocus.h>
 #include <gtkmm/frame.h>
 #include <gtkmm/grid.h>
 #include <gtkmm/label.h>
-#include <gtkmm/liststore.h>
+#include <gtkmm/listitem.h>
+#include <gtkmm/listview.h>
+#include <gtkmm/signallistitemfactory.h>
+#include <gtkmm/singleselection.h>
 #include <gtkmm/spinbutton.h>
 #include <gtkmm/textview.h>
-#include <gtkmm/treemodelcolumn.h>
 #include <gtkmm/widget.h>
-
-#if GTKMM_CHECK_VERSION(4, 0, 0)
-#include <gtkmm/eventcontrollerfocus.h>
-#endif
 
 #include <fmt/format.h>
 
@@ -54,7 +54,7 @@
 #include <string>
 #include <string_view>
 
-using namespace libtransmission::Values;
+using namespace tr::Values;
 
 /**
 ***
@@ -119,9 +119,9 @@ public:
     Gtk::Entry* init_entry(Glib::ustring const& name, tr_quark key);
     Gtk::TextView* init_text_view(Glib::ustring const& name, tr_quark key);
     PathButton* init_chooser_button(Glib::ustring const& name, tr_quark key);
-    Gtk::ComboBox* init_encryption_combo(Glib::ustring const& name, tr_quark key);
-    Gtk::ComboBox* init_time_combo(Glib::ustring const& name, tr_quark key);
-    Gtk::ComboBox* init_week_combo(Glib::ustring const& name, tr_quark key);
+    Gtk::DropDown* init_encryption_combo(Glib::ustring const& name, tr_quark key);
+    Gtk::DropDown* init_time_combo(Glib::ustring const& name, tr_quark key);
+    Gtk::DropDown* init_week_combo(Glib::ustring const& name, tr_quark key);
 
     template<typename T>
     T* get_widget(Glib::ustring const& name) const
@@ -149,7 +149,7 @@ private:
 
     void chosen_cb(PathButton& w, tr_quark key);
 
-    void onIntComboChanged(Gtk::ComboBox& combo_box, tr_quark key);
+    void onIntComboChanged(Gtk::DropDown& dropdown, tr_quark key);
 
     static auto get_weekday_string(Glib::Date::Weekday weekday);
 
@@ -228,7 +228,7 @@ void PageBase::spun_cb(Gtk::SpinButton& w, tr_quark const key, bool isDouble)
 Gtk::SpinButton* PageBase::init_spin_button(Glib::ustring const& name, tr_quark const key, int low, int high, int step)
 {
     auto* button = get_widget<Gtk::SpinButton>(name);
-    button->set_adjustment(Gtk::Adjustment::create(gtr_pref_int_get(key), low, high, step));
+    button->set_adjustment(Gtk::Adjustment::create(gtr_pref_int_get<int>(key), low, high, step));
     button->set_digits(0);
     button->signal_value_changed().connect([this, button, key]() { spun_cb(*button, key, false); });
     return button;
@@ -308,70 +308,44 @@ PathButton* PageBase::init_chooser_button(Glib::ustring const& name, tr_quark co
     return button;
 }
 
-void PageBase::onIntComboChanged(Gtk::ComboBox& combo_box, tr_quark const key)
+void PageBase::onIntComboChanged(Gtk::DropDown& dropdown, tr_quark const key)
 {
-    core_->set_pref(key, gtr_combo_box_get_active_enum(combo_box));
+    core_->set_pref(key, gtr_combo_box_get_active_enum(dropdown));
 }
 
-Gtk::ComboBox* PageBase::init_encryption_combo(Glib::ustring const& name, tr_quark const key)
+Gtk::DropDown* PageBase::init_encryption_combo(Glib::ustring const& name, tr_quark const key)
 {
-    auto* const combo = get_widget<Gtk::ComboBox>(name);
+    auto* const dropdown = get_widget<Gtk::DropDown>(name);
     gtr_combo_box_set_enum(
-        *combo,
+        *dropdown,
         {
             { _("Allow encryption"), TR_CLEAR_PREFERRED },
             { _("Prefer encryption"), TR_ENCRYPTION_PREFERRED },
             { _("Require encryption"), TR_ENCRYPTION_REQUIRED },
         });
     auto const mode = gtr_pref_get<tr_encryption_mode>(key).value_or(TR_ENCRYPTION_PREFERRED);
-    gtr_combo_box_set_active_enum(*combo, static_cast<int>(mode));
-    combo->signal_changed().connect([this, combo, key]() { onIntComboChanged(*combo, key); });
-    return combo;
+    gtr_combo_box_set_active_enum(*dropdown, static_cast<int>(mode));
+    dropdown->property_selected().signal_changed().connect([this, dropdown, key]() { onIntComboChanged(*dropdown, key); });
+    return dropdown;
 }
 
-Gtk::ComboBox* PageBase::init_time_combo(Glib::ustring const& name, tr_quark const key)
+Gtk::DropDown* PageBase::init_time_combo(Glib::ustring const& name, tr_quark const key)
 {
-    class TimeModelColumns : public Gtk::TreeModelColumnRecord
-    {
-    public:
-        TimeModelColumns() noexcept
-        {
-            add(offset);
-            add(title);
-        }
+    auto* const dropdown = get_widget<Gtk::DropDown>(name);
 
-        Gtk::TreeModelColumn<int> offset;
-        Gtk::TreeModelColumn<Glib::ustring> title;
-    };
-
-    static TimeModelColumns const time_cols;
-
-    /* build a store at 15 minute intervals */
-    auto store = Gtk::ListStore::create(time_cols);
+    auto items = std::vector<std::pair<Glib::ustring, int>>{};
+    items.reserve(60 * 24 / 15);
 
     for (int i = 0; i < 60 * 24; i += 15)
     {
-        auto const iter = store->append();
-        (*iter)[time_cols.offset] = i;
-        (*iter)[time_cols.title] = fmt::format("{:02}:{:02}", i / 60, i % 60);
+        items.emplace_back(fmt::format("{:02}:{:02}", i / 60, i % 60), i);
     }
 
-    /* build the widget */
-    auto* const combo = get_widget<Gtk::ComboBox>(name);
-    combo->set_model(store);
-    auto* r = Gtk::make_managed<Gtk::CellRendererText>();
-    combo->pack_start(*r, true);
-    combo->add_attribute(r->property_text(), time_cols.title);
-    combo->set_active(gtr_pref_int_get(key) / 15);
-    combo->signal_changed().connect(
-        [this, combo, key]()
-        {
-            if (auto const iter = combo->get_active(); iter)
-            {
-                core_->set_pref(key, iter->get_value(time_cols.offset));
-            }
-        });
-    return combo;
+    gtr_combo_box_set_enum(*dropdown, items);
+    gtr_combo_box_set_active_enum(*dropdown, gtr_pref_int_get<int>(key));
+    dropdown->property_selected().signal_changed().connect(
+        [this, dropdown, key]() { core_->set_pref(key, gtr_combo_box_get_active_enum(*dropdown)); });
+    return dropdown;
 }
 
 auto PageBase::get_weekday_string(Glib::Date::Weekday weekday)
@@ -382,11 +356,11 @@ auto PageBase::get_weekday_string(Glib::Date::Weekday weekday)
     return date.format_string("%A");
 }
 
-Gtk::ComboBox* PageBase::init_week_combo(Glib::ustring const& name, tr_quark const key)
+Gtk::DropDown* PageBase::init_week_combo(Glib::ustring const& name, tr_quark const key)
 {
-    auto* const combo = get_widget<Gtk::ComboBox>(name);
+    auto* const dropdown = get_widget<Gtk::DropDown>(name);
     gtr_combo_box_set_enum(
-        *combo,
+        *dropdown,
         {
             { _("Every Day"), TR_SCHED_ALL },
             { _("Weekdays"), TR_SCHED_WEEKDAY },
@@ -399,9 +373,9 @@ Gtk::ComboBox* PageBase::init_week_combo(Glib::ustring const& name, tr_quark con
             { get_weekday_string(Glib::Date::Weekday::SATURDAY), TR_SCHED_SAT },
             { get_weekday_string(Glib::Date::Weekday::SUNDAY), TR_SCHED_SUN },
         });
-    gtr_combo_box_set_active_enum(*combo, gtr_pref_int_get(key));
-    combo->signal_changed().connect([this, combo, key]() { onIntComboChanged(*combo, key); });
-    return combo;
+    gtr_combo_box_set_active_enum(*dropdown, gtr_pref_int_get<int>(key));
+    dropdown->property_selected().signal_changed().connect([this, dropdown, key]() { onIntComboChanged(*dropdown, key); });
+    return dropdown;
 }
 
 /****
@@ -497,8 +471,8 @@ SeedingPage::SeedingPage(
     Glib::RefPtr<Session> const& core)
     : PageBase(cast_item, builder, core)
 {
-    init_check_button("stop_seeding_ratio_check", TR_KEY_ratio_limit_enabled);
-    init_spin_button_double("stop_seeding_ratio_spin", TR_KEY_ratio_limit, 0, 1000, 0.05);
+    init_check_button("stop_seeding_ratio_check", TR_KEY_seed_ratio_limited);
+    init_spin_button_double("stop_seeding_ratio_spin", TR_KEY_seed_ratio_limit, 0, 1000, 0.05);
     init_check_button("stop_seeding_timeout_check", TR_KEY_idle_seeding_limit_enabled);
     init_spin_button("stop_seeding_timeout_spin", TR_KEY_idle_seeding_limit, 1, 40320, 5);
     init_check_button("seeding_done_script_check", TR_KEY_script_torrent_done_seeding_enabled);
@@ -534,7 +508,7 @@ DesktopPage::DesktopPage(
     }
     else
     {
-        get_widget<Gtk::CheckButton>("show_systray_icon_check")->hide();
+        get_widget<Gtk::CheckButton>("show_systray_icon_check")->set_visible(false);
     }
 
     init_check_button("notify_on_torrent_add_check", TR_KEY_torrent_added_notification_enabled);
@@ -669,21 +643,37 @@ PrivacyPage::PrivacyPage(
 *****  Remote Tab
 ****/
 
+class WhitelistRow : public Glib::Object
+{
+public:
+    static Glib::RefPtr<WhitelistRow> create(Glib::ustring address)
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
+        return Glib::make_refptr_for_instance(new WhitelistRow(std::move(address)));
+    }
+
+    [[nodiscard]] Glib::ustring const& get_address() const noexcept
+    {
+        return address_;
+    }
+
+    void set_address(Glib::ustring address)
+    {
+        address_ = std::move(address);
+    }
+
+private:
+    explicit WhitelistRow(Glib::ustring address)
+        : Glib::ObjectBase(typeid(WhitelistRow))
+        , address_(std::move(address))
+    {
+    }
+
+    Glib::ustring address_;
+};
+
 class RemotePage : public PageBase
 {
-    class WhitelistModelColumns : public Gtk::TreeModelColumnRecord
-    {
-    public:
-        WhitelistModelColumns() noexcept
-        {
-            add(address);
-        }
-
-        Gtk::TreeModelColumn<Glib::ustring> address;
-    };
-
-    static WhitelistModelColumns const whitelist_cols;
-
 public:
     RemotePage(BaseObjectType* cast_item, Glib::RefPtr<Gtk::Builder> const& builder, Glib::RefPtr<Session> const& core);
     RemotePage(RemotePage&&) = delete;
@@ -701,42 +691,43 @@ private:
     void refresh_remote_auth_sensitivity();
 
     void refreshWhitelist();
-    void onAddressEdited(Glib::ustring const& path, Glib::ustring const& address);
+    void onAddressEdited(Glib::ustring const& address);
     void onAddWhitelistClicked();
     void onRemoveWhitelistClicked();
     void refreshRPCSensitivity();
+    void setup_whitelist_view();
 
     void onLaunchClutchCB();
 
-    static Glib::RefPtr<Gtk::ListStore> whitelist_tree_model_new(std::string const& whitelist);
+    static Glib::RefPtr<Gio::ListStore<WhitelistRow>> whitelist_model_new(std::string const& whitelist);
 
 private:
     Glib::RefPtr<Session> core_;
 
-    Gtk::ComboBox* mode_combo_ = nullptr;
+    Gtk::DropDown* mode_combo_ = nullptr;
     Gtk::Label* restart_note_ = nullptr;
     Gtk::Box* host_panel_ = nullptr;
     Gtk::Box* remote_panel_ = nullptr;
     Gtk::Box* none_panel_ = nullptr;
 
-    Gtk::TreeView* view_;
-    Gtk::Button* remove_button_;
-    Gtk::CheckButton* rpc_tb_;
-    Gtk::CheckButton* auth_tb_;
-    Gtk::CheckButton* whitelist_tb_;
+    Gtk::ListView* view_ = nullptr;
+    Gtk::Button* remove_button_ = nullptr;
+    Gtk::CheckButton* rpc_tb_ = nullptr;
+    Gtk::CheckButton* auth_tb_ = nullptr;
+    Gtk::CheckButton* whitelist_tb_ = nullptr;
     Gtk::CheckButton* remote_auth_tb_ = nullptr;
 
-    Glib::RefPtr<Gtk::ListStore> store_;
+    Glib::RefPtr<Gio::ListStore<WhitelistRow>> store_;
+    Glib::RefPtr<Gtk::SingleSelection> selection_;
+    Glib::RefPtr<Gtk::SignalListItemFactory> whitelist_factory_;
     std::vector<Gtk::Widget*> auth_widgets_;
     std::vector<Gtk::Widget*> whitelist_widgets_;
     std::vector<Gtk::Widget*> remote_auth_widgets_;
 };
 
-RemotePage::WhitelistModelColumns const RemotePage::whitelist_cols;
-
-Glib::RefPtr<Gtk::ListStore> RemotePage::whitelist_tree_model_new(std::string const& whitelist)
+Glib::RefPtr<Gio::ListStore<WhitelistRow>> RemotePage::whitelist_model_new(std::string const& whitelist)
 {
-    auto store = Gtk::ListStore::create(whitelist_cols);
+    auto store = Gio::ListStore<WhitelistRow>::create();
 
     std::istringstream stream(whitelist);
     std::string s;
@@ -750,8 +741,7 @@ Glib::RefPtr<Gtk::ListStore> RemotePage::whitelist_tree_model_new(std::string co
             continue;
         }
 
-        auto const iter = store->append();
-        (*iter)[whitelist_cols.address] = s;
+        store->append(WhitelistRow::create(s));
     }
 
     return store;
@@ -761,26 +751,31 @@ void RemotePage::refreshWhitelist()
 {
     std::ostringstream gstr;
 
-    for (auto const& row : store_->children())
+    for (guint i = 0, n = store_->get_n_items(); i < n; ++i)
     {
-        gstr << row.get_value(whitelist_cols.address) << ",";
+        if (auto const row = gtr_ptr_dynamic_cast<WhitelistRow>(store_->get_item(i)))
+        {
+            gstr << row->get_address().raw() << ",";
+        }
     }
 
     auto str = gstr.str();
     if (!str.empty())
     {
-        str.resize(str.size() - 1); /* remove the trailing comma */
+        str.resize(str.size() - 1);
     }
 
     core_->set_pref(TR_KEY_rpc_whitelist, str);
 }
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-void RemotePage::onAddressEdited(Glib::ustring const& path, Glib::ustring const& address)
+void RemotePage::onAddressEdited(Glib::ustring const& address)
 {
-    if (auto const iter = store_->get_iter(path); iter)
+    if (auto const selected = selection_->get_selected_item(); selected)
     {
-        (*iter)[whitelist_cols.address] = address;
+        if (auto const row = gtr_ptr_dynamic_cast<WhitelistRow>(selected))
+        {
+            row->set_address(address);
+        }
     }
 
     refreshWhitelist();
@@ -788,19 +783,17 @@ void RemotePage::onAddressEdited(Glib::ustring const& path, Glib::ustring const&
 
 void RemotePage::onAddWhitelistClicked()
 {
-    auto const iter = store_->append();
-    (*iter)[whitelist_cols.address] = "0.0.0.0";
-
-    view_->set_cursor(store_->get_path(iter), *view_->get_column(0), true);
+    auto const pos = store_->get_n_items();
+    store_->append(WhitelistRow::create("0.0.0.0"));
+    selection_->set_selected(pos);
+    refreshWhitelist();
 }
 
 void RemotePage::onRemoveWhitelistClicked()
 {
-    auto const sel = view_->get_selection();
-
-    if (auto const iter = sel->get_selected(); iter)
+    if (auto const selected = selection_->get_selected(); selected != GTK_INVALID_LIST_POSITION)
     {
-        store_->erase(iter);
+        store_->remove(selected);
         refreshWhitelist();
     }
 }
@@ -810,9 +803,8 @@ void RemotePage::refreshRPCSensitivity()
     bool const rpc_active = rpc_tb_->get_active();
     bool const auth_active = auth_tb_->get_active();
     bool const whitelist_active = whitelist_tb_->get_active();
-    auto const sel = view_->get_selection();
-    auto const have_addr = sel->get_selected();
-    auto const n_rules = store_->children().size();
+    auto const have_addr = selection_->get_selected_item() != nullptr;
+    auto const n_rules = store_->get_n_items();
 
     for (auto* const widget : auth_widgets_)
     {
@@ -827,13 +819,72 @@ void RemotePage::refreshRPCSensitivity()
     remove_button_->set_sensitive(rpc_active && whitelist_active && have_addr && n_rules > 1);
 }
 
+void RemotePage::setup_whitelist_view()
+{
+    static auto const AddressLabelKey = Glib::Quark("tr-whitelist-address-label");
+
+    whitelist_factory_ = Gtk::SignalListItemFactory::create();
+
+    whitelist_factory_->signal_setup().connect(
+        [this](Glib::RefPtr<Gtk::ListItem> const& list_item)
+        {
+            auto* const address_label = Gtk::make_managed<Gtk::EditableLabel>();
+            address_label->set_hexpand(true);
+            address_label->property_editing().signal_changed().connect(
+                [this, list_item, address_label]()
+                {
+                    if (address_label->get_editing())
+                    {
+                        return;
+                    }
+
+                    if (auto const row = gtr_ptr_dynamic_cast<WhitelistRow>(list_item->get_item()); row != nullptr)
+                    {
+                        if (auto const text = address_label->get_text(); text != row->get_address())
+                        {
+                            onAddressEdited(text);
+                        }
+                    }
+                });
+
+            list_item->set_data(AddressLabelKey, address_label);
+            list_item->set_child(*address_label);
+        });
+
+    whitelist_factory_->signal_bind().connect(
+        [](Glib::RefPtr<Gtk::ListItem> const& list_item)
+        {
+            auto const row = gtr_ptr_dynamic_cast<WhitelistRow>(list_item->get_item());
+            auto* const address_label = static_cast<Gtk::EditableLabel*>(list_item->get_data(AddressLabelKey));
+
+            if (row == nullptr || address_label == nullptr)
+            {
+                return;
+            }
+
+            address_label->set_text(row->get_address());
+        });
+
+    view_->set_factory(whitelist_factory_);
+    selection_ = Gtk::SingleSelection::create(store_);
+    view_->set_model(selection_);
+
+    setup_item_view_button_event_handling(
+        *view_,
+        {},
+        [this](double view_x, double view_y) { return on_item_view_button_released(*view_, view_x, view_y); });
+
+    selection_->signal_selection_changed().connect([this](guint /*position*/, guint /*n_items*/)
+                                                   { refreshRPCSensitivity(); });
+}
+
 void RemotePage::onLaunchClutchCB()
 {
     if (core_->is_remote())
     {
         auto const use_https = gtr_pref_flag_get(TR_KEY_remote_session_https);
         auto const host = gtr_pref_string_get(TR_KEY_remote_session_host);
-        auto const port = gtr_pref_int_get(TR_KEY_remote_session_port);
+        auto const port = gtr_pref_int_get<int>(TR_KEY_remote_session_port);
         auto path = gtr_pref_string_get(TR_KEY_remote_session_url_base_path);
         if (path.empty())
         {
@@ -848,7 +899,7 @@ void RemotePage::onLaunchClutchCB()
     }
     else
     {
-        gtr_open_uri(fmt::format("http://localhost:{}/", gtr_pref_int_get(TR_KEY_rpc_port)));
+        gtr_open_uri(fmt::format("http://localhost:{}/", gtr_pref_int_get<uint16_t>(TR_KEY_rpc_port)));
     }
 }
 
@@ -916,10 +967,10 @@ void RemotePage::build_remote_client_panel()
 
     auto* const port_label = Gtk::make_managed<Gtk::Label>(_("_Port:"), true);
     port_label->set_halign(Gtk::Align::START);
-    auto const port_adj = Gtk::Adjustment::create(gtr_pref_int_get(TR_KEY_remote_session_port), 1, 65535, 1);
+    auto const port_adj = Gtk::Adjustment::create(gtr_pref_int_get<int>(TR_KEY_remote_session_port), 1, 65535, 1);
     auto* const port_spin = Gtk::make_managed<Gtk::SpinButton>(port_adj);
     port_spin->set_hexpand(true);
-    port_spin->signal_value_changed().connect([this, port_spin]()
+    port_spin->signal_value_changed().connect([this, port_spin = Glib::RefPtr<Gtk::SpinButton>(port_spin)]()
                                               { core_->set_pref(TR_KEY_remote_session_port, port_spin->get_value_as_int()); });
     grid->attach(*port_label, 0, row, 1, 1);
     grid->attach(*port_spin, 1, row++, 1, 1);
@@ -1017,7 +1068,7 @@ RemotePage::RemotePage(BaseObjectType* cast_item, Glib::RefPtr<Gtk::Builder> con
     , host_panel_(Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL))
     , remote_panel_(Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL))
     , none_panel_(Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL))
-    , view_(get_widget<Gtk::TreeView>("rpc_whitelist_view"))
+    , view_(get_widget<Gtk::ListView>("rpc_whitelist_view"))
     , remove_button_(get_widget<Gtk::Button>("remove_from_rpc_whistlist_button"))
     , rpc_tb_(init_check_button("enable_rpc_check", TR_KEY_rpc_enabled))
     , auth_tb_(init_check_button("enable_rpc_auth_check", TR_KEY_rpc_authentication_required))
@@ -1028,7 +1079,7 @@ RemotePage::RemotePage(BaseObjectType* cast_item, Glib::RefPtr<Gtk::Builder> con
     build_none_panel();
 
     auto* const mode_label = Gtk::make_managed<Gtk::Label>(_("_Session mode:"), true);
-    mode_combo_ = Gtk::make_managed<Gtk::ComboBox>();
+    mode_combo_ = Gtk::make_managed<Gtk::DropDown>();
     gtr_combo_box_set_enum(
         *mode_combo_,
         {
@@ -1069,7 +1120,7 @@ RemotePage::RemotePage(BaseObjectType* cast_item, Glib::RefPtr<Gtk::Builder> con
     pack_start(*panels_box, Gtk::PACK_EXPAND_WIDGET);
 #endif
 
-    mode_combo_->signal_changed().connect(sigc::mem_fun(*this, &RemotePage::on_session_mode_changed));
+    mode_combo_->property_selected().signal_changed().connect(sigc::mem_fun(*this, &RemotePage::on_session_mode_changed));
     update_mode_panels();
 
     rpc_tb_->signal_toggled().connect([this]() { refreshRPCSensitivity(); });
@@ -1091,26 +1142,10 @@ RemotePage::RemotePage(BaseObjectType* cast_item, Glib::RefPtr<Gtk::Builder> con
     whitelist_tb_->signal_toggled().connect([this]() { refreshRPCSensitivity(); });
 
     {
-        store_ = whitelist_tree_model_new(gtr_pref_string_get(TR_KEY_rpc_whitelist));
-
-        view_->set_model(store_);
-        setup_item_view_button_event_handling(
-            *view_,
-            {},
-            [this](double view_x, double view_y) { return on_item_view_button_released(*view_, view_x, view_y); });
+        store_ = whitelist_model_new(gtr_pref_string_get(TR_KEY_rpc_whitelist));
+        setup_whitelist_view();
 
         whitelist_widgets_.push_back(view_);
-        auto const sel = view_->get_selection();
-        sel->signal_changed().connect([this]() { refreshRPCSensitivity(); });
-
-        auto* r = Gtk::make_managed<Gtk::CellRendererText>();
-        r->signal_edited().connect(sigc::mem_fun(*this, &RemotePage::onAddressEdited));
-        r->property_editable() = true;
-        auto* c = Gtk::make_managed<Gtk::TreeViewColumn>("", *r);
-        c->add_attribute(r->property_text(), whitelist_cols.address);
-        c->set_expand(true);
-        view_->append_column(*c);
-
         whitelist_widgets_.push_back(get_widget<Gtk::Label>("rpc_whitelist_label"));
 
         remove_button_->signal_clicked().connect([this]() { onRemoveWhitelistClicked(); });
@@ -1338,7 +1373,7 @@ NetworkPage::NetworkPage(
 #ifdef WITH_UTP
     init_check_button("enable_utp_check", TR_KEY_utp_enabled);
 #else
-    get_widget<Gtk::CheckButton>("enable_utp_check")->hide();
+    get_widget<Gtk::CheckButton>("enable_utp_check")->set_visible(false);
 #endif
 
     init_check_button("enable_pex_check", TR_KEY_pex_enabled);

@@ -66,13 +66,10 @@
                 <property name="focusable">1</property>
                 <property name="has-frame">1</property>
                 <property name="child">
-                  <object class="GtkTreeView" id="files_view">
+                  <object class="GtkListView" id="files_view">
                     <property name="focusable">1</property>
                     <property name="hexpand">1</property>
                     <property name="vexpand">1</property>
-                    <child internal-child="selection">
-                      <object class="GtkTreeSelection" id="files_view_selection"/>
-                    </child>
                   </object>
                 </property>
                 <layout>
@@ -95,7 +92,7 @@
               </object>
             </child>
             <child>
-              <object class="GtkComboBox" id="priority_combo">
+              <object class="GtkDropDown" id="priority_combo">
                 <property name="hexpand">1</property>
                 <layout>
                   <property name="column">1</property>

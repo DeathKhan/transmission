@@ -1,27 +1,25 @@
-// This file Copyright © Mnemosyne LLC.
-// It may be used under GPLv2 (SPDX: GPL-2.0-only), GPLv3 (SPDX: GPL-3.0-only),
-// or any future license endorsed by Mnemosyne LLC.
-// License text can be found in the licenses/ folder.
+// This file Copyright © Transmission authors and contributors.
+// SPDX-License-Identifier: MIT
 
 #include "PathButton.h"
 
-#include "GtkCompat.h"
 #include "Utils.h"
 
 #include <giomm/file.h>
-#include <glibmm/i18n.h>
-#include <gtkmm/box.h>
-#if GTKMM_CHECK_VERSION(4, 0, 0)
+#include <giomm/liststore.h>
 #include <glibmm/error.h>
+#include <glibmm/i18n.h>
 #include <glibmm/property.h>
-#include <gtkmm/dialog.h>
-#include <gtkmm/filechoosernative.h>
+#include <gtkmm/box.h>
+#include <gtkmm/filedialog.h>
 #include <gtkmm/image.h>
 #include <gtkmm/label.h>
 #include <gtkmm/separator.h>
-#endif
 
+#include <string_view>
 #include <vector>
+
+using namespace std::string_view_literals;
 
 class PathButton::Impl
 {
@@ -33,33 +31,41 @@ public:
     Impl& operator=(Impl const&) = delete;
     ~Impl() = default;
 
-#if GTKMM_CHECK_VERSION(4, 0, 0)
-    std::string const& get_filename() const;
+    [[nodiscard]] std::string const& get_filename() const
+    {
+        return current_file_;
+    }
+
     void set_filename(std::string const& value);
 
     void set_shortcut_folders(std::list<std::string> const& value);
 
     void add_filter(Glib::RefPtr<Gtk::FileFilter> const& value);
 
-    Glib::Property<Gtk::FileChooser::Action>& property_action();
-    Glib::Property<Glib::ustring>& property_title();
+    Glib::Property<Glib::ustring>& property_action()
+    {
+        return action_;
+    }
 
-    sigc::signal<void()>& signal_selection_changed();
-#endif
+    Glib::Property<Glib::ustring>& property_title()
+    {
+        return title_;
+    }
+
+    sigc::signal<void()>& signal_selection_changed()
+    {
+        return selection_changed_;
+    }
 
 private:
-#if GTKMM_CHECK_VERSION(4, 0, 0)
-    void show_dialog();
+    [[nodiscard]] bool is_folder_action() const;
 
+    void show_dialog();
     void update();
     void update_mode();
-#endif
 
-private:
-#if GTKMM_CHECK_VERSION(4, 0, 0)
     PathButton& widget_;
-
-    Glib::Property<Gtk::FileChooser::Action> action_;
+    Glib::Property<Glib::ustring> action_;
     Glib::Property<Glib::ustring> title_;
 
     sigc::signal<void()> selection_changed_;
@@ -71,20 +77,16 @@ private:
     std::string current_file_;
     std::list<std::string> shortcut_folders_;
     std::vector<Glib::RefPtr<Gtk::FileFilter>> filters_;
-#endif
 };
 
-PathButton::Impl::Impl([[maybe_unused]] PathButton& widget)
-#if GTKMM_CHECK_VERSION(4, 0, 0)
+PathButton::Impl::Impl(PathButton& widget)
     : widget_(widget)
-    , action_(widget, "action", Gtk::FileChooser::Action::OPEN)
+    , action_(widget, "action", Glib::ustring{ "open" })
     , title_(widget, "title", {})
     , image_(Gtk::make_managed<Gtk::Image>())
     , label_(Gtk::make_managed<Gtk::Label>())
     , mode_(Gtk::make_managed<Gtk::Image>())
-#endif
 {
-#if GTKMM_CHECK_VERSION(4, 0, 0)
     action_.get_proxy().signal_changed().connect([this]() { update_mode(); });
 
     label_->set_ellipsize(Pango::EllipsizeMode::END);
@@ -102,14 +104,11 @@ PathButton::Impl::Impl([[maybe_unused]] PathButton& widget)
 
     update();
     update_mode();
-#endif
 }
 
-#if GTKMM_CHECK_VERSION(4, 0, 0)
-
-std::string const& PathButton::Impl::get_filename() const
+bool PathButton::Impl::is_folder_action() const
 {
-    return current_file_;
+    return action_.get_value() == "select-folder";
 }
 
 void PathButton::Impl::set_filename(std::string const& value)
@@ -129,62 +128,71 @@ void PathButton::Impl::add_filter(Glib::RefPtr<Gtk::FileFilter> const& value)
     filters_.push_back(value);
 }
 
-Glib::Property<Gtk::FileChooser::Action>& PathButton::Impl::property_action()
-{
-    return action_;
-}
-
-Glib::Property<Glib::ustring>& PathButton::Impl::property_title()
-{
-    return title_;
-}
-
-sigc::signal<void()>& PathButton::Impl::signal_selection_changed()
-{
-    return selection_changed_;
-}
-
 void PathButton::Impl::show_dialog()
 {
+    auto dialog = Gtk::FileDialog::create();
     auto const title = title_.get_value();
-
-    auto dialog = Gtk::FileChooserNative::create(
-        !title.empty() ? title : _("Select a File"),
-        action_.get_value(),
-        _("_Open"),
-        _("_Cancel"));
-    dialog->set_transient_for(gtr_widget_get_window(widget_));
+    dialog->set_title(!title.empty() ? title : _("Select a File"));
     dialog->set_modal(true);
 
     if (!current_file_.empty())
     {
-        dialog->set_file(Gio::File::create_for_path(current_file_));
+        dialog->set_initial_file(Gio::File::create_for_path(current_file_));
     }
 
-    for (auto const& folder : shortcut_folders_)
+    if (!filters_.empty())
     {
-        dialog->remove_shortcut_folder(Gio::File::create_for_path(folder));
-        dialog->add_shortcut_folder(Gio::File::create_for_path(folder));
-    }
-
-    for (auto const& filter : filters_)
-    {
-        dialog->add_filter(filter);
-    }
-
-    dialog->signal_response().connect(
-        [this, dialog](int response) mutable
+        auto filter_list = Gio::ListStore<Gtk::FileFilter>::create();
+        for (auto const& filter : filters_)
         {
-            if (response == TR_GTK_RESPONSE_TYPE(ACCEPT))
+            filter_list->append(filter);
+        }
+
+        dialog->set_filters(filter_list);
+        dialog->set_default_filter(filters_.front());
+    }
+
+    auto on_done = [this, dialog](Glib::RefPtr<Gio::AsyncResult>& result, bool const folder)
+    {
+        try
+        {
+            Glib::RefPtr<Gio::File> file;
+            if (folder)
             {
-                set_filename(dialog->get_file()->get_path());
-                selection_changed_.emit();
+                file = dialog->select_folder_finish(result);
+            }
+            else
+            {
+                file = dialog->open_finish(result);
             }
 
-            dialog.reset();
-        });
+            if (file != nullptr)
+            {
+                set_filename(file->get_path());
+                selection_changed_.emit();
+            }
+        }
+        catch (Glib::Error const&)
+        {
+        }
+    };
 
-    dialog->show();
+    auto* const parent = dynamic_cast<Gtk::Window*>(widget_.get_root());
+    if (parent == nullptr)
+    {
+        return;
+    }
+
+    if (is_folder_action())
+    {
+        dialog->select_folder(*parent, [this, dialog, on_done](Glib::RefPtr<Gio::AsyncResult>& result) mutable
+                                { on_done(result, true); });
+    }
+    else
+    {
+        dialog->open(*parent, [this, dialog, on_done](Glib::RefPtr<Gio::AsyncResult>& result) mutable
+                     { on_done(result, false); });
+    }
 }
 
 void PathButton::Impl::update()
@@ -215,11 +223,8 @@ void PathButton::Impl::update()
 
 void PathButton::Impl::update_mode()
 {
-    mode_->set_from_icon_name(
-        action_.get_value() == Gtk::FileChooser::Action::SELECT_FOLDER ? "folder-open-symbolic" : "document-open-symbolic");
+    mode_->set_from_icon_name(is_folder_action() ? "folder-open-symbolic" : "document-open-symbolic");
 }
-
-#endif
 
 PathButton::PathButton()
     : Glib::ObjectBase(typeid(PathButton))
@@ -227,9 +232,9 @@ PathButton::PathButton()
 {
 }
 
-PathButton::PathButton(BaseObjectType* cast_item, Glib::RefPtr<Gtk::Builder> const& /*builder*/)
+PathButton::PathButton(BaseObjectType* const cast_item, Glib::RefPtr<Gtk::Builder> const& /*builder*/)
     : Glib::ObjectBase(typeid(PathButton))
-    , BaseWidgetType(cast_item)
+    , Gtk::Button(cast_item)
     , impl_(std::make_unique<Impl>(*this))
 {
 }
@@ -238,18 +243,8 @@ PathButton::~PathButton() = default;
 
 void PathButton::set_shortcut_folders(std::list<std::string> const& value)
 {
-#if GTKMM_CHECK_VERSION(4, 0, 0)
     impl_->set_shortcut_folders(value);
-#else
-    for (auto const& folder : value)
-    {
-        remove_shortcut_folder(folder);
-        add_shortcut_folder(folder);
-    }
-#endif
 }
-
-#if GTKMM_CHECK_VERSION(4, 0, 0)
 
 std::string PathButton::get_filename() const
 {
@@ -266,7 +261,7 @@ void PathButton::add_filter(Glib::RefPtr<Gtk::FileFilter> const& value)
     impl_->add_filter(value);
 }
 
-Glib::PropertyProxy<Gtk::FileChooser::Action> PathButton::property_action()
+Glib::PropertyProxy<Glib::ustring> PathButton::property_action()
 {
     return impl_->property_action().get_proxy();
 }
@@ -280,5 +275,3 @@ sigc::signal<void()>& PathButton::signal_selection_changed()
 {
     return impl_->signal_selection_changed();
 }
-
-#endif

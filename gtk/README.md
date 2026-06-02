@@ -58,14 +58,35 @@ Remote keys (underscore form, same as Qt):
 
 ## Build
 
-From the repository root (Arch: Transmission build deps + `libsoup3`):
+**GTK 4 only.** CMake fails if `USE_GTK_VERSION` is not `4`. UI comes from `gtk/ui/gtk4/` only (no GTK 3 fallback).
+
+The client builds with **`ENABLE_DEPRECATED=OFF`** (default): no `GtkTreeView`, `GtkComboBox`, or GTK 3 file chooser APIs.
+
+From the repository root on branch `transmission-client-gtk` (Arch: Transmission build deps + `libsoup3`):
 
 ```bash
-cmake -B build -DENABLE_GTK=ON -DENABLE_QT=OFF -DENABLE_DAEMON=OFF -DENABLE_CLI=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake -B build \
+  -D USE_GTK_VERSION=4 \
+  -D ENABLE_GTK=ON -D ENABLE_QT=OFF -D ENABLE_DAEMON=OFF -D ENABLE_CLI=OFF \
+  -D CMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build --target transmission-client-gtk
 ```
 
 Install or run from `build/gtk/transmission-client-gtk`.
+
+### GTK 4 port status
+
+| Area | Widgets |
+|------|---------|
+| Main torrent list | `GtkListView` + list-item factories |
+| Filter bar | `GtkDropDown` + `Gio::ListStore` rows |
+| Prefs (combos, RPC whitelist) | `GtkDropDown`, `GtkListView` |
+| Details (peers, trackers, webseeds, files, options) | `GtkColumnView` / `GtkListView` / `GtkTreeListModel`, `GtkDropDown` |
+| Message log | `GtkListView`, `GtkDropDown` |
+| Path pickers | `Gtk::FileDialog` (`PathButton`) |
+| Dialogs / alerts | `Gtk::AlertDialog`, `present()` |
+
+Legacy `gtk/ui/gtk3/` remains in the tree for reference only; it is not compiled.
 
 ### Arch Linux (AUR)
 

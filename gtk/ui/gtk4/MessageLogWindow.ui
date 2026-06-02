@@ -23,7 +23,7 @@ horizontal]]></property>
                     <child>
                       <object class="GtkImage">
                         <property name="icon-name">document-save-as</property>
-                        <property name="icon_size">normal</property>
+                        <property name="icon-size">normal</property>
                       </object>
                     </child>
                     <child>
@@ -47,7 +47,7 @@ horizontal]]></property>
                     <child>
                       <object class="GtkImage">
                         <property name="icon-name">edit-clear</property>
-                        <property name="icon_size">normal</property>
+                        <property name="icon-size">normal</property>
                       </object>
                     </child>
                     <child>
@@ -76,7 +76,7 @@ horizontal]]></property>
                     <child>
                       <object class="GtkImage">
                         <property name="icon-name">media-playback-pause</property>
-                        <property name="icon_size">normal</property>
+                        <property name="icon-size">normal</property>
                       </object>
                     </child>
                     <child>
@@ -104,14 +104,7 @@ horizontal]]></property>
               </object>
             </child>
             <child>
-              <object class="GtkComboBox" id="level_combo">
-                <child>
-                  <object class="GtkCellRendererText" id="level_combo_renderer"/>
-                  <attributes>
-                    <attribute name="text">1</attribute>
-                  </attributes>
-                </child>
-              </object>
+              <object class="GtkDropDown" id="level_combo"/>
             </child>
           </object>
         </child>
@@ -121,11 +114,8 @@ horizontal]]></property>
             <property name="focusable">1</property>
             <property name="has-frame">1</property>
             <property name="child">
-              <object class="GtkTreeView" id="messages_view">
+              <object class="GtkListView" id="messages_view">
                 <property name="focusable">1</property>
-                <child internal-child="selection">
-                  <object class="GtkTreeSelection" id="messages_view_selection"/>
-                </child>
               </object>
             </property>
             <style>

@@ -199,7 +199,7 @@
                                 <property name="hexpand">1</property>
                                 <property name="spacing">12</property>
                                 <child>
-                                  <object class="GtkComboBox" id="alt_speed_start_time_combo">
+                                  <object class="GtkDropDown" id="alt_speed_start_time_combo">
                                     <property name="sensitive" bind-source="alt_schedule_time_check" bind-property="active" bind-flags="sync-create">0</property>
                                     <property name="hexpand">1</property>
                                   </object>
@@ -213,7 +213,7 @@
                                   </object>
                                 </child>
                                 <child>
-                                  <object class="GtkComboBox" id="alt_speed_end_time_combo">
+                                  <object class="GtkDropDown" id="alt_speed_end_time_combo">
                                     <property name="sensitive" bind-source="alt_schedule_time_check" bind-property="active" bind-flags="sync-create">0</property>
                                     <property name="hexpand">1</property>
                                   </object>
@@ -225,7 +225,7 @@
                               </object>
                             </child>
                             <child>
-                              <object class="GtkComboBox" id="alt_speed_days_combo">
+                              <object class="GtkDropDown" id="alt_speed_days_combo">
                                 <property name="sensitive" bind-source="alt_schedule_time_check" bind-property="active" bind-flags="sync-create">0</property>
                                 <property name="hexpand">1</property>
                                 <layout>
@@ -668,7 +668,7 @@
                               </object>
                             </child>
                             <child>
-                              <object class="GtkComboBox" id="encryption_mode_combo">
+                              <object class="GtkDropDown" id="encryption_mode_combo">
                                 <property name="hexpand">1</property>
                                 <layout>
                                   <property name="column">1</property>
@@ -1428,13 +1428,9 @@ To add a new primary URL, add it after a blank line.]]></property>
                                 <property name="vscrollbar-policy">never</property>
                                 <property name="has-frame">1</property>
                                 <property name="child">
-                                  <object class="GtkTreeView" id="rpc_whitelist_view">
+                                  <object class="GtkListView" id="rpc_whitelist_view">
                                     <property name="focusable">1</property>
                                     <property name="tooltip-text" translatable="yes">IP addresses may use wildcards, such as 192.168.*.*</property>
-                                    <property name="headers-visible">0</property>
-                                    <child internal-child="selection">
-                                      <object class="GtkTreeSelection" id="rpc_whitelist_view_selection"/>
-                                    </child>
                                   </object>
                                 </property>
                                 <layout>

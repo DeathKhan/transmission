@@ -15,7 +15,8 @@
 #include <glibmm/main.h>
 #include <glibmm/ustring.h>
 #include <gtkmm/checkbutton.h>
-#include <gtkmm/messagedialog.h>
+#include <gtkmm/dialog.h>
+#include <gtkmm/label.h>
 
 #include <fmt/format.h>
 
@@ -57,7 +58,7 @@ private:
     int done_ = 0;
     bool do_move_ = false;
     sigc::connection timer_;
-    std::unique_ptr<Gtk::MessageDialog> message_dialog_;
+    std::unique_ptr<Gtk::Dialog> progress_dialog_;
     PathButton* chooser_ = nullptr;
     Gtk::CheckButton* move_tb_ = nullptr;
 };
@@ -82,9 +83,11 @@ void RelocateDialog::Impl::startMovingNextTorrent()
 
     torrent_ids_.pop_back();
 
-    message_dialog_->set_message(
-        fmt::format(fmt::runtime(_("Moving '{torrent_name}'")), fmt::arg("torrent_name", tr_torrentName(tor))),
-        true);
+    if (progress_dialog_ != nullptr)
+    {
+        progress_dialog_->set_title(
+            fmt::format(fmt::runtime(_("Moving '{torrent_name}'")), fmt::arg("torrent_name", tr_torrentName(tor))));
+    }
 }
 
 /* every once in awhile, check to see if the move is done.
@@ -93,23 +96,9 @@ bool RelocateDialog::Impl::onTimer()
 {
     if (done_ == TR_LOC_ERROR)
     {
-        auto d = std::make_shared<Gtk::MessageDialog>(
-            *message_dialog_,
-            _("Couldn't move torrent"),
-            false,
-            TR_GTK_MESSAGE_TYPE(ERROR),
-            TR_GTK_BUTTONS_TYPE(CLOSE),
-            true);
-
-        d->signal_response().connect(
-            [this, d](int /*response*/) mutable
-            {
-                d.reset();
-                message_dialog_.reset();
-                dialog_.close();
-            });
-
-        d->show();
+        gtr_alert_error(dialog_, _("Couldn't move torrent"), {});
+        progress_dialog_.reset();
+        dialog_.close();
         return false;
     }
 
@@ -121,7 +110,7 @@ bool RelocateDialog::Impl::onTimer()
         }
         else
         {
-            message_dialog_.reset();
+            progress_dialog_.reset();
             dialog_.close();
             return false;
         }
@@ -148,17 +137,12 @@ void RelocateDialog::Impl::onResponse(int response)
             return;
         }
 
-        /* pop up a dialog saying that the work is in progress */
-        message_dialog_ = std::make_unique<Gtk::MessageDialog>(
-            dialog_,
-            Glib::ustring(),
-            false,
-            TR_GTK_MESSAGE_TYPE(INFO),
-            TR_GTK_BUTTONS_TYPE(CLOSE),
-            true);
-        message_dialog_->set_secondary_text(_("This may take a moment…"));
-        message_dialog_->set_response_sensitive(TR_GTK_RESPONSE_TYPE(CLOSE), false);
-        message_dialog_->show();
+        progress_dialog_ = std::make_unique<Gtk::Dialog>();
+        progress_dialog_->set_transient_for(dialog_);
+        progress_dialog_->set_modal(true);
+        progress_dialog_->set_title(_("Moving Torrent"));
+        progress_dialog_->set_child(*Gtk::make_managed<Gtk::Label>(_("This may take a moment…")));
+        progress_dialog_->present();
 
         /* start the move and periodically check its status */
         done_ = TR_LOC_DONE;

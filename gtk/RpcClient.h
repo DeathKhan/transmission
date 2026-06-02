@@ -8,9 +8,9 @@
 #include <string_view>
 
 #include <libtransmission/api-compat.h>
+#include <libtransmission/env.h>
 #include <libtransmission/quark.h>
 #include <libtransmission/transmission.h>
-#include <libtransmission/utils.h>
 #include <libtransmission/variant.h>
 
 struct tr_session;
@@ -60,7 +60,7 @@ private:
     std::string username_;
     std::string password_;
     std::string session_id_;
-    libtransmission::api_compat::Style network_style_ = libtransmission::api_compat::Style::Tr4;
+    tr::api_compat::Style network_style_ = tr::api_compat::default_style();
     bool const verbose_ = tr_env_key_exists("TR_RPC_VERBOSE");
 };
 

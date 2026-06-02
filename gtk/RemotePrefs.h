@@ -82,7 +82,7 @@ inline void apply_session_mode_prefs(SessionMode const mode)
         host = "127.0.0.1";
     }
 
-    auto const port = static_cast<int>(gtr_pref_int_get(TR_KEY_remote_session_port));
+    auto const port = static_cast<int>(gtr_pref_int_get<int>(TR_KEY_remote_session_port));
     auto const use_https = gtr_pref_flag_get(TR_KEY_remote_session_https);
     auto path = gtr_pref_string_get(TR_KEY_remote_session_url_base_path);
     if (path.empty())

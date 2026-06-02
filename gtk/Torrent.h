@@ -67,15 +67,6 @@ class Torrent
     , public Glib::Object
 {
 public:
-    class Columns : public Gtk::TreeModelColumnRecord
-    {
-    public:
-        Columns();
-
-        Gtk::TreeModelColumn<Torrent*> self;
-        Gtk::TreeModelColumn<Glib::ustring> name_collated;
-    };
-
     enum class ChangeFlag : uint8_t
     {
         ACTIVE_PEER_COUNT,
@@ -161,11 +152,6 @@ public:
     [[nodiscard]] std::vector<std::string> const& get_tracker_sitenames() const noexcept;
 
     ChangeFlags update_from_rpc(TorrentRpcSnapshot const& snapshot);
-
-    static Columns const& get_columns();
-
-    static int get_item_id(Glib::RefPtr<Glib::ObjectBase const> const& item);
-    static void get_item_value(Glib::RefPtr<Glib::ObjectBase const> const& item, int column, Glib::ValueBase& value);
 
     static int compare_by_id(Glib::RefPtr<Torrent const> const& lhs, Glib::RefPtr<Torrent const> const& rhs);
     static bool less_by_id(Glib::RefPtr<Torrent const> const& lhs, Glib::RefPtr<Torrent const> const& rhs);

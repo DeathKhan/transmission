@@ -18,12 +18,16 @@
 #include <libtransmission/file.h> /* tr_sys_path_is_same() */
 
 #include <giomm/file.h>
+#include <giomm/listmodel.h>
+#include <giomm/liststore.h>
 #include <glibmm/i18n.h>
 #include <gtkmm/checkbutton.h>
-#include <gtkmm/combobox.h>
+#include <gtkmm/dropdown.h>
+#include <gtkmm/filedialog.h>
 #include <gtkmm/filefilter.h>
 
 #include <memory>
+#include <vector>
 #include <utility>
 
 using namespace std::literals;
@@ -78,7 +82,7 @@ private:
     FileList* file_list_ = nullptr;
     Gtk::CheckButton* run_check_ = nullptr;
     Gtk::CheckButton* trash_check_ = nullptr;
-    Gtk::ComboBox* priority_combo_ = nullptr;
+    Gtk::DropDown* priority_combo_ = nullptr;
     FreeSpaceLabel* freespace_label_ = nullptr;
 };
 
@@ -230,8 +234,7 @@ void OptionsDialog::Impl::downloadDirChanged(PathButton* b)
 namespace
 {
 
-template<typename FileChooserT>
-void addTorrentFilters(FileChooserT* chooser)
+void addTorrentFilters(PathButton* chooser)
 {
     auto filter = Gtk::FileFilter::create();
     filter->set_name(_("Torrent files"));
@@ -242,6 +245,23 @@ void addTorrentFilters(FileChooserT* chooser)
     filter->set_name(_("All files"));
     filter->add_pattern("*");
     chooser->add_filter(filter);
+}
+
+void apply_torrent_filters_to_dialog(Glib::RefPtr<Gtk::FileDialog> const& dialog)
+{
+    auto const torrent_filter = Gtk::FileFilter::create();
+    torrent_filter->set_name(_("Torrent files"));
+    torrent_filter->add_pattern("*.torrent");
+
+    auto const all_filter = Gtk::FileFilter::create();
+    all_filter->set_name(_("All files"));
+    all_filter->add_pattern("*");
+
+    auto filter_list = Gio::ListStore<Gtk::FileFilter>::create();
+    filter_list->append(torrent_filter);
+    filter_list->append(all_filter);
+    dialog->set_filters(filter_list);
+    dialog->set_default_filter(torrent_filter);
 }
 
 } // namespace
@@ -287,7 +307,7 @@ OptionsDialog::Impl::Impl(
     , file_list_(gtr_get_widget_derived<FileList>(builder, "files_view_scroll", "files_view", core_, 0))
     , run_check_(gtr_get_widget<Gtk::CheckButton>(builder, "start_check"))
     , trash_check_(gtr_get_widget<Gtk::CheckButton>(builder, "trash_check"))
-    , priority_combo_(gtr_get_widget<Gtk::ComboBox>(builder, "priority_combo"))
+    , priority_combo_(gtr_get_widget<Gtk::DropDown>(builder, "priority_combo"))
     , freespace_label_(gtr_get_widget_derived<FreeSpaceLabel>(builder, "free_space_label", core_, downloadDir_))
 {
     dialog_.set_default_response(TR_GTK_RESPONSE_TYPE(ACCEPT));
@@ -340,54 +360,50 @@ OptionsDialog::Impl::Impl(
 *****
 ****/
 
-void TorrentFileChooserDialog::onOpenDialogResponse(int response, Glib::RefPtr<Session> const& core)
+void torrent_open_chooser_show(Gtk::Window& parent, Glib::RefPtr<Session> const& core)
 {
-    if (response == TR_GTK_RESPONSE_TYPE(ACCEPT))
-    {
-        bool const do_start = gtr_pref_flag_get(TR_KEY_start_added_torrents);
-        bool const do_prompt = get_choice(std::string(ShowOptionsDialogChoice)) == "true";
-        bool const do_notify = false;
-
-        auto const files = IF_GTKMM4(get_files2, get_files)();
-        g_assert(!files.empty());
-
-        /* remember this folder the next time we use this dialog */
-        if (auto const folder = IF_GTKMM4(get_current_folder, get_current_folder_file)(); folder != nullptr)
-        {
-            gtr_pref_string_set(TR_KEY_open_dialog_dir, folder->get_path());
-        }
-        else if (auto const parent = files.front()->get_parent(); parent != nullptr)
-        {
-            gtr_pref_string_set(TR_KEY_open_dialog_dir, parent->get_path());
-        }
-
-        core->add_files(files, do_start, do_prompt, do_notify);
-    }
-}
-
-std::unique_ptr<TorrentFileChooserDialog> TorrentFileChooserDialog::create(
-    Gtk::Window& parent,
-    Glib::RefPtr<Session> const& core)
-{
-    return std::unique_ptr<TorrentFileChooserDialog>(new TorrentFileChooserDialog(parent, core));
-}
-
-TorrentFileChooserDialog::TorrentFileChooserDialog(Gtk::Window& parent, Glib::RefPtr<Session> const& core)
-    : Gtk::FileChooserNative(_("Open a Torrent"), parent, TR_GTK_FILE_CHOOSER_ACTION(OPEN), _("_Open"), _("_Cancel"))
-{
-    set_modal(true);
-
-    set_select_multiple(true);
-    addTorrentFilters(this);
-    signal_response().connect([this, core](int response) { onOpenDialogResponse(response, core); });
+    auto dialog = Gtk::FileDialog::create();
+    dialog->set_title(_("Open a Torrent"));
+    dialog->set_modal(true);
+    apply_torrent_filters_to_dialog(dialog);
 
     if (auto const folder = gtr_pref_string_get(TR_KEY_open_dialog_dir); !folder.empty())
     {
-        IF_GTKMM4(set_current_folder, set_current_folder_file)(Gio::File::create_for_path(folder));
+        dialog->set_initial_folder(Gio::File::create_for_path(folder));
     }
 
-    add_choice(std::string(ShowOptionsDialogChoice), _("Show options dialog"));
-    set_choice(std::string(ShowOptionsDialogChoice), gtr_pref_flag_get(TR_KEY_show_options_window) ? "true" : "false");
+    dialog->open_multiple(
+        parent,
+        [core, dialog](Glib::RefPtr<Gio::AsyncResult>& result)
+        {
+            try
+            {
+                auto const files = dialog->open_multiple_finish(result);
+                if (files.empty())
+                {
+                    return;
+                }
+
+                bool const do_start = gtr_pref_flag_get(TR_KEY_start_added_torrents);
+                bool const do_prompt = gtr_pref_flag_get(TR_KEY_show_options_window);
+                bool const do_notify = false;
+
+                auto paths = files;
+
+                if (!paths.empty())
+                {
+                    if (auto const parent_dir = paths.front()->get_parent())
+                    {
+                        gtr_pref_string_set(TR_KEY_open_dialog_dir, parent_dir->get_path());
+                    }
+
+                    core->add_files(paths, do_start, do_prompt, do_notify);
+                }
+            }
+            catch (Glib::Error const&)
+            {
+            }
+        });
 }
 
 /***

@@ -1,0 +1,34 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 16,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "transmission-client-gtk",
+      "displayName": "transmission-client-gtk (GTK 4)",
+      "description": "Remote-capable GTK 4 client (transmission-client-gtk)",
+      "binaryDir": "${sourceDir}/build-client-gtk",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "USE_GTK_VERSION": "4",
+        "ENABLE_DEPRECATED": "OFF",
+        "ENABLE_GTK": "ON",
+        "ENABLE_QT": "OFF",
+        "ENABLE_DAEMON": "OFF",
+        "ENABLE_CLI": "OFF",
+        "ENABLE_TESTS": "OFF",
+        "RUN_CLANG_TIDY": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "transmission-client-gtk",
+      "configurePreset": "transmission-client-gtk",
+      "targets": ["transmission-client-gtk"]
+    }
+  ]
+}

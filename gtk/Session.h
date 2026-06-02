@@ -93,9 +93,13 @@ public:
         std::vector<tr_torrent_id_t> const& ids,
         std::function<void(tr_variant&&)> callback) const;
 
+    void fetch_torrent_file_list(
+        std::vector<tr_torrent_id_t> const& ids,
+        std::function<void(tr_variant&&)> callback) const;
+
     void torrent_set_location(std::vector<tr_torrent_id_t> const& ids, std::string_view path, bool move);
 
-    transmission::app::FaviconCache<Glib::RefPtr<Gdk::Pixbuf>>& favicon_cache() const;
+    tr::app::FaviconCache<Glib::RefPtr<Gdk::Pixbuf>>& favicon_cache() const;
 
     /******
     *******

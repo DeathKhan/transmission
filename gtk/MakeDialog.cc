@@ -370,7 +370,7 @@ void MakeDialog::Impl::onResponse(int response)
                 dialog_.close();
             }
         });
-    progress_dialog_->show();
+    progress_dialog_->present();
 }
 
 /***

@@ -5,10 +5,10 @@
 
 #include "FilterBar.h"
 
+#include "FilterBarRows.h"
 #include "FilterListModel.hh"
 #include "HigWorkarea.h" // GUI_PAD
-#include "ListModelAdapter.h"
-#include "Session.h" // torrent_cols
+#include "Session.h"
 #include "Torrent.h"
 #include "TorrentFilter.h"
 #include "Utils.h"
@@ -17,30 +17,22 @@
 
 #include <libtransmission/tr-macros.h>
 
-#include <gdkmm/pixbuf.h>
+#include <giomm/liststore.h>
 #include <glibmm/i18n.h>
 #include <glibmm/main.h>
 #include <glibmm/unicode.h>
 #include <glibmm/ustring.h>
-#include <gtkmm/cellrendererpixbuf.h>
-#include <gtkmm/cellrenderertext.h>
-#include <gtkmm/combobox.h>
+#include <gtkmm/dropdown.h>
 #include <gtkmm/entry.h>
+#include <gtkmm/image.h>
 #include <gtkmm/label.h>
-#include <gtkmm/liststore.h>
-#include <gtkmm/treemodel.h>
-#include <gtkmm/treemodelcolumn.h>
-#include <gtkmm/treemodelfilter.h>
-#include <gtkmm/treerowreference.h>
-#include <gtkmm/treestore.h>
-
-#if GTKMM_CHECK_VERSION(4, 0, 0)
-#include <gtkmm/filterlistmodel.h>
-#endif
+#include <gtkmm/listitem.h>
+#include <gtkmm/separator.h>
+#include <gtkmm/signallistitemfactory.h>
 
 #include <fmt/format.h>
 
-#include <algorithm> // std::transform()
+#include <algorithm>
 #include <array>
 #include <map>
 #include <memory>
@@ -52,16 +44,203 @@ using namespace tr::app;
 
 namespace
 {
-using TrackerType = TorrentFilter::Tracker;
 
 constexpr auto ShowModeSeparator = static_cast<ShowMode>(-1);
-constexpr auto TrackerSeparator = static_cast<TrackerType>(-1);
+
+Glib::RefPtr<Gtk::SignalListItemFactory> make_show_mode_dropdown_factory()
+{
+    static auto const IconKey = Glib::Quark("tr-filter-show-mode-icon");
+    static auto const NameKey = Glib::Quark("tr-filter-show-mode-name");
+    static auto const CountKey = Glib::Quark("tr-filter-show-mode-count");
+    static auto const SeparatorKey = Glib::Quark("tr-filter-show-mode-separator");
+    static auto const RowKey = Glib::Quark("tr-filter-show-mode-row");
+
+    auto factory = Gtk::SignalListItemFactory::create();
+
+    factory->signal_setup().connect(
+        [](Glib::RefPtr<Gtk::ListItem> const& list_item)
+        {
+            auto* const separator = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
+
+            auto* const row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, GUI_PAD);
+            row->set_hexpand(true);
+
+            auto* const icon = Gtk::make_managed<Gtk::Image>();
+
+            auto* const name_label = Gtk::make_managed<Gtk::Label>();
+            name_label->set_hexpand(true);
+            name_label->set_xalign(0);
+
+            auto* const count_label = Gtk::make_managed<Gtk::Label>();
+            count_label->set_xalign(1);
+            count_label->add_css_class("dim-label");
+
+            row->append(*icon);
+            row->append(*name_label);
+            row->append(*count_label);
+
+            list_item->set_data(SeparatorKey, separator);
+            list_item->set_data(RowKey, row);
+            list_item->set_data(IconKey, icon);
+            list_item->set_data(NameKey, name_label);
+            list_item->set_data(CountKey, count_label);
+        });
+
+    factory->signal_bind().connect(
+        [](Glib::RefPtr<Gtk::ListItem> const& list_item)
+        {
+            auto const row = gtr_ptr_dynamic_cast<FilterShowModeRow>(list_item->get_item());
+            auto* const separator = static_cast<Gtk::Separator*>(list_item->get_data(SeparatorKey));
+            auto* const row_box = static_cast<Gtk::Box*>(list_item->get_data(RowKey));
+            auto* const icon = static_cast<Gtk::Image*>(list_item->get_data(IconKey));
+            auto* const name_label = static_cast<Gtk::Label*>(list_item->get_data(NameKey));
+            auto* const count_label = static_cast<Gtk::Label*>(list_item->get_data(CountKey));
+
+            if (row == nullptr || separator == nullptr || row_box == nullptr || icon == nullptr || name_label == nullptr ||
+                count_label == nullptr)
+            {
+                return;
+            }
+
+            if (row->is_separator())
+            {
+                list_item->set_selectable(false);
+                list_item->set_child(*separator);
+                return;
+            }
+
+            list_item->set_selectable(true);
+
+            if (list_item->get_child() != row_box)
+            {
+                list_item->set_child(*row_box);
+            }
+
+            auto const show_mode = row->get_show_mode();
+            auto const icon_name = row->get_icon_name();
+
+            if (show_mode == ShowMode::ShowAll || icon_name.empty())
+            {
+                icon->set_size_request(0, -1);
+                icon->set_from_icon_name({});
+            }
+            else
+            {
+                icon->set_size_request(20, -1);
+                icon->set_from_icon_name(icon_name);
+                icon->set_margin_top(2);
+                icon->set_margin_bottom(2);
+            }
+
+            name_label->set_label(row->get_name());
+
+            auto const count = row->get_count();
+            count_label->set_label(count >= 0 ? Glib::ustring(fmt::format("{:L}", count)) : Glib::ustring{});
+        });
+
+    return factory;
+}
+
+Glib::RefPtr<Gtk::SignalListItemFactory> make_tracker_dropdown_factory()
+{
+    static auto const IconKey = Glib::Quark("tr-filter-tracker-icon");
+    static auto const NameKey = Glib::Quark("tr-filter-tracker-name");
+    static auto const CountKey = Glib::Quark("tr-filter-tracker-count");
+    static auto const SeparatorKey = Glib::Quark("tr-filter-tracker-separator");
+    static auto const RowKey = Glib::Quark("tr-filter-tracker-row");
+
+    auto factory = Gtk::SignalListItemFactory::create();
+
+    factory->signal_setup().connect(
+        [](Glib::RefPtr<Gtk::ListItem> const& list_item)
+        {
+            auto* const separator = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
+
+            auto* const row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, GUI_PAD);
+            row->set_hexpand(true);
+
+            auto* const icon = Gtk::make_managed<Gtk::Image>();
+
+            auto* const name_label = Gtk::make_managed<Gtk::Label>();
+            name_label->set_hexpand(true);
+            name_label->set_xalign(0);
+
+            auto* const count_label = Gtk::make_managed<Gtk::Label>();
+            count_label->set_xalign(1);
+            count_label->add_css_class("dim-label");
+
+            row->append(*icon);
+            row->append(*name_label);
+            row->append(*count_label);
+
+            list_item->set_data(SeparatorKey, separator);
+            list_item->set_data(RowKey, row);
+            list_item->set_data(IconKey, icon);
+            list_item->set_data(NameKey, name_label);
+            list_item->set_data(CountKey, count_label);
+        });
+
+    factory->signal_bind().connect(
+        [](Glib::RefPtr<Gtk::ListItem> const& list_item)
+        {
+            auto const tracker_row = gtr_ptr_dynamic_cast<FilterTrackerRow>(list_item->get_item());
+            auto* const separator = static_cast<Gtk::Separator*>(list_item->get_data(SeparatorKey));
+            auto* const row_box = static_cast<Gtk::Box*>(list_item->get_data(RowKey));
+            auto* const icon = static_cast<Gtk::Image*>(list_item->get_data(IconKey));
+            auto* const name_label = static_cast<Gtk::Label*>(list_item->get_data(NameKey));
+            auto* const count_label = static_cast<Gtk::Label*>(list_item->get_data(CountKey));
+
+            if (tracker_row == nullptr || separator == nullptr || row_box == nullptr || icon == nullptr ||
+                name_label == nullptr || count_label == nullptr)
+            {
+                return;
+            }
+
+            if (tracker_row->is_separator())
+            {
+                list_item->set_selectable(false);
+                list_item->set_child(*separator);
+                return;
+            }
+
+            list_item->set_selectable(true);
+
+            if (list_item->get_child() != row_box)
+            {
+                list_item->set_child(*row_box);
+            }
+
+            if (tracker_row->get_type() == FilterTrackerRow::TrackerType::HOST)
+            {
+                icon->set_size_request(20, -1);
+                if (auto const pixbuf = tracker_row->get_pixbuf(); pixbuf != nullptr)
+                {
+                    icon->set(pixbuf);
+                }
+                else
+                {
+                    icon->set(Glib::RefPtr<Gdk::Pixbuf>{});
+                }
+            }
+            else
+            {
+                icon->set_size_request(0, -1);
+                icon->set(Glib::RefPtr<Gdk::Pixbuf>{});
+            }
+
+            name_label->set_label(tracker_row->get_displayname());
+
+            auto const count = tracker_row->get_count();
+            count_label->set_label(count >= 0 ? Glib::ustring(fmt::format("{:L}", count)) : Glib::ustring{});
+        });
+
+    return factory;
+}
+
 } // namespace
 
 class FilterBar::Impl
 {
-    using FilterModel = IF_GTKMM4(Gtk::FilterListModel, Gtk::TreeModelFilter);
-
 public:
     Impl(FilterBar& widget, Glib::RefPtr<Session> const& core);
     Impl(Impl&&) = delete;
@@ -70,20 +249,14 @@ public:
     Impl& operator=(Impl const&) = delete;
     ~Impl();
 
-    [[nodiscard]] Glib::RefPtr<FilterModel> get_filter_model() const;
+    [[nodiscard]] Glib::RefPtr<Gtk::FilterListModel> get_filter_model() const;
 
 private:
     template<typename T>
     T* get_template_child(char const* name) const;
 
-    void show_mode_combo_box_init(Gtk::ComboBox& combo);
-    static void render_show_mode_pixbuf_func(
-        Gtk::CellRendererPixbuf& cell_renderer,
-        Gtk::TreeModel::const_iterator const& iter);
-
-    void tracker_combo_box_init(Gtk::ComboBox& combo);
-    static void render_pixbuf_func(Gtk::CellRendererPixbuf& cell_renderer, Gtk::TreeModel::const_iterator const& iter);
-    static void render_number_func(Gtk::CellRendererText& cell_renderer, Gtk::TreeModel::const_iterator const& iter);
+    void show_mode_dropdown_init(Gtk::DropDown& dropdown);
+    void tracker_dropdown_init(Gtk::DropDown& dropdown);
 
     void update_filter_show_mode();
     void update_filter_tracker();
@@ -92,7 +265,7 @@ private:
     bool show_mode_filter_model_update();
 
     bool tracker_filter_model_update();
-    void favicon_ready_cb(Glib::RefPtr<Gdk::Pixbuf> const* pixbuf, Gtk::TreeModel::Path const& path);
+    void favicon_ready_cb(Glib::RefPtr<Gdk::Pixbuf> const* pixbuf, guint position);
 
     void update_filter_models(Torrent::ChangeFlags changes);
     void update_filter_models_idle(Torrent::ChangeFlags changes);
@@ -100,27 +273,23 @@ private:
     void update_count_label_idle();
     bool update_count_label();
 
-    static Glib::RefPtr<Gtk::ListStore> show_mode_filter_model_new();
-    static void status_model_update_count(Gtk::TreeModel::iterator const& iter, int n);
-    static bool show_mode_is_it_a_separator(Gtk::TreeModel::const_iterator const& iter);
-
-    static Glib::RefPtr<Gtk::TreeStore> tracker_filter_model_new();
-    static void tracker_model_update_count(Gtk::TreeModel::iterator const& iter, int n);
-    static bool is_it_a_separator(Gtk::TreeModel::const_iterator const& iter);
+    static Glib::RefPtr<Gio::ListStore<FilterShowModeRow>> show_mode_filter_model_new();
+    static Glib::RefPtr<Gio::ListStore<FilterTrackerRow>> tracker_filter_model_new();
 
     static Glib::ustring get_name_from_host(std::string const& host);
 
-    static Gtk::CellRendererText* number_renderer_new();
+    [[nodiscard]] FilterShowModeRow* get_selected_show_mode_row() const;
+    [[nodiscard]] FilterTrackerRow* get_selected_tracker_row() const;
 
 private:
     FilterBar& widget_;
     Glib::RefPtr<Session> const core_;
 
-    Glib::RefPtr<Gtk::ListStore> const show_mode_model_;
-    Glib::RefPtr<Gtk::TreeStore> const tracker_model_;
+    Glib::RefPtr<Gio::ListStore<FilterShowModeRow>> const show_mode_model_;
+    Glib::RefPtr<Gio::ListStore<FilterTrackerRow>> const tracker_model_;
 
-    Gtk::ComboBox* show_mode_ = nullptr;
-    Gtk::ComboBox* tracker_ = nullptr;
+    Gtk::DropDown* show_mode_ = nullptr;
+    Gtk::DropDown* tracker_ = nullptr;
     Gtk::Entry* entry_ = nullptr;
     Gtk::Label* show_lb_ = nullptr;
     Glib::RefPtr<TorrentFilter> filter_ = TorrentFilter::create();
@@ -132,34 +301,6 @@ private:
     sigc::connection update_filter_models_on_change_tag_;
 };
 
-// --- TRACKERS
-
-namespace
-{
-class TrackerFilterModelColumns : public Gtk::TreeModelColumnRecord
-{
-public:
-    TrackerFilterModelColumns() noexcept
-    {
-        add(displayname);
-        add(count);
-        add(type);
-        add(sitename);
-        add(pixbuf);
-    }
-
-    Gtk::TreeModelColumn<Glib::ustring> displayname; /* human-readable name; ie, Legaltorrents */
-    Gtk::TreeModelColumn<int> count; /* how many matches there are */
-    Gtk::TreeModelColumn<TrackerType> type;
-    Gtk::TreeModelColumn<Glib::ustring> sitename; // pattern-matching text; see tr_parsed_url.sitename
-    Gtk::TreeModelColumn<Glib::RefPtr<Gdk::Pixbuf>> pixbuf;
-};
-
-TrackerFilterModelColumns const tracker_filter_cols;
-
-} // namespace
-
-/* human-readable name; ie, Legaltorrents */
 Glib::ustring FilterBar::Impl::get_name_from_host(std::string const& host)
 {
     std::string name = host;
@@ -172,21 +313,35 @@ Glib::ustring FilterBar::Impl::get_name_from_host(std::string const& host)
     return name;
 }
 
-void FilterBar::Impl::tracker_model_update_count(Gtk::TreeModel::iterator const& iter, int n)
+FilterShowModeRow* FilterBar::Impl::get_selected_show_mode_row() const
 {
-    if (n != iter->get_value(tracker_filter_cols.count))
+    auto const selected = show_mode_->get_selected();
+    if (selected == GTK_INVALID_LIST_POSITION)
     {
-        iter->set_value(tracker_filter_cols.count, n);
+        return nullptr;
     }
+
+    return gtr_ptr_dynamic_cast<FilterShowModeRow>(show_mode_model_->get_item(selected)).get();
 }
 
-void FilterBar::Impl::favicon_ready_cb(Glib::RefPtr<Gdk::Pixbuf> const* pixbuf, Gtk::TreeModel::Path const& path)
+FilterTrackerRow* FilterBar::Impl::get_selected_tracker_row() const
 {
-    if (pixbuf != nullptr && *pixbuf != nullptr)
+    auto const selected = tracker_->get_selected();
+    if (selected == GTK_INVALID_LIST_POSITION)
     {
-        if (auto const iter = tracker_model_->get_iter(path); iter)
+        return nullptr;
+    }
+
+    return gtr_ptr_dynamic_cast<FilterTrackerRow>(tracker_model_->get_item(selected)).get();
+}
+
+void FilterBar::Impl::favicon_ready_cb(Glib::RefPtr<Gdk::Pixbuf> const* pixbuf, guint const position)
+{
+    if (pixbuf != nullptr && *pixbuf != nullptr && position < tracker_model_->get_n_items())
+    {
+        if (auto const row = gtr_ptr_dynamic_cast<FilterTrackerRow>(tracker_model_->get_item(position)))
         {
-            iter->set_value(tracker_filter_cols.pixbuf, *pixbuf);
+            row->set_pixbuf(*pixbuf);
         }
     }
 }
@@ -213,9 +368,6 @@ bool FilterBar::Impl::tracker_filter_model_update()
 
     auto const torrents_model = core_->get_model();
 
-    /* Walk through all the torrents, tallying how many matches there are
-     * for the various categories. Also make a sorted list of all tracker
-     * hosts s.t. we can merge it with the existing list */
     auto n_torrents = 0;
     auto site_infos = std::unordered_map<std::string /*site*/, site_info>{};
     for (auto i = 0U, count = torrents_model->get_n_items(); i < count; ++i)
@@ -265,31 +417,27 @@ bool FilterBar::Impl::tracker_filter_model_update()
     std::ranges::transform(site_infos, std::begin(sites_v), [](auto const& it) { return it.second; });
     std::ranges::sort(sites_v);
 
-    // update the "all" count
-    auto iter = tracker_model_->children().begin();
-    if (iter)
+    if (auto const all_row = gtr_ptr_dynamic_cast<FilterTrackerRow>(tracker_model_->get_item(0)))
     {
-        tracker_model_update_count(iter, n_torrents);
+        all_row->set_count(n_torrents);
     }
 
-    // offset past the "All" and the separator
-    ++iter;
-    ++iter;
-
     size_t i = 0;
+    guint pos = 2;
+
     for (;;)
     {
-        // are we done yet?
         bool const new_sites_done = i >= n_sites;
-        bool const old_sites_done = !iter;
+        bool const old_sites_done = pos >= tracker_model_->get_n_items();
+
         if (new_sites_done && old_sites_done)
         {
             break;
         }
 
-        // decide what to do
         bool remove_row = false;
         bool insert_row = false;
+
         if (new_sites_done)
         {
             remove_row = true;
@@ -300,8 +448,9 @@ bool FilterBar::Impl::tracker_filter_model_update()
         }
         else
         {
-            auto const sitename = iter->get_value(tracker_filter_cols.sitename);
-            int const cmp = sitename.raw().compare(sites_v.at(i).sitename);
+            auto const existing = gtr_ptr_dynamic_cast<FilterTrackerRow>(tracker_model_->get_item(pos));
+            auto const sitename = existing != nullptr ? existing->get_sitename().raw() : std::string{};
+            int const cmp = sitename.compare(sites_v.at(i).sitename);
 
             if (cmp < 0)
             {
@@ -313,173 +462,79 @@ bool FilterBar::Impl::tracker_filter_model_update()
             }
         }
 
-        // do something
         if (remove_row)
         {
-            iter = tracker_model_->erase(iter);
+            tracker_model_->remove(pos);
         }
         else if (insert_row)
         {
             auto const& site = sites_v.at(i);
-            auto const add = tracker_model_->insert(iter);
-            add->set_value(tracker_filter_cols.sitename, Glib::ustring{ site.sitename });
-            add->set_value(tracker_filter_cols.displayname, get_name_from_host(site.sitename));
-            add->set_value(tracker_filter_cols.count, site.count);
-            add->set_value(tracker_filter_cols.type, TrackerType::HOST);
-            auto path = tracker_model_->get_path(add);
+            auto const new_row = FilterTrackerRow::create(
+                get_name_from_host(site.sitename),
+                site.count,
+                FilterTrackerRow::TrackerType::HOST,
+                Glib::ustring{ site.sitename });
+            tracker_model_->insert(pos, new_row);
             core_->favicon_cache().load(
                 site.announce_url,
-                [this, path = std::move(path)](auto const* pixbuf) { favicon_ready_cb(pixbuf, path); });
+                [this, pos](auto const* pixbuf) { favicon_ready_cb(pixbuf, pos); });
             ++i;
+            ++pos;
         }
-        else // update row
+        else
         {
-            tracker_model_update_count(iter, sites_v.at(i).count);
-            ++iter;
+            if (auto const existing = gtr_ptr_dynamic_cast<FilterTrackerRow>(tracker_model_->get_item(pos)))
+            {
+                existing->set_count(sites_v.at(i).count);
+            }
+
             ++i;
+            ++pos;
         }
     }
 
     return false;
 }
 
-Glib::RefPtr<Gtk::TreeStore> FilterBar::Impl::tracker_filter_model_new()
+Glib::RefPtr<Gio::ListStore<FilterTrackerRow>> FilterBar::Impl::tracker_filter_model_new()
 {
-    auto store = Gtk::TreeStore::create(tracker_filter_cols);
-
-    auto iter = store->append();
-    iter->set_value(tracker_filter_cols.displayname, Glib::ustring(_("All")));
-    iter->set_value(tracker_filter_cols.type, TrackerType::ALL);
-
-    iter = store->append();
-    iter->set_value(tracker_filter_cols.type, TrackerSeparator);
-
+    auto store = Gio::ListStore<FilterTrackerRow>::create();
+    store->append(FilterTrackerRow::create(Glib::ustring(_("All")), 0, FilterTrackerRow::TrackerType::ALL, {}));
+    store->append(FilterTrackerRow::create_separator());
     return store;
-}
-
-bool FilterBar::Impl::is_it_a_separator(Gtk::TreeModel::const_iterator const& iter)
-{
-    return iter->get_value(tracker_filter_cols.type) == TrackerSeparator;
-}
-
-void FilterBar::Impl::render_pixbuf_func(Gtk::CellRendererPixbuf& cell_renderer, Gtk::TreeModel::const_iterator const& iter)
-{
-    cell_renderer.property_width() = TrackerType{ iter->get_value(tracker_filter_cols.type) } == TrackerType::HOST ? 20 : 0;
-}
-
-void FilterBar::Impl::render_number_func(Gtk::CellRendererText& cell_renderer, Gtk::TreeModel::const_iterator const& iter)
-{
-    auto const count = iter->get_value(tracker_filter_cols.count);
-    cell_renderer.property_text() = count >= 0 ? fmt::format("{:L}", count) : "";
-}
-
-Gtk::CellRendererText* FilterBar::Impl::number_renderer_new()
-{
-    auto* r = Gtk::make_managed<Gtk::CellRendererText>();
-
-    r->property_alignment() = TR_PANGO_ALIGNMENT(RIGHT);
-    r->property_weight() = TR_PANGO_WEIGHT(ULTRALIGHT);
-    r->property_xalign() = 1.0;
-    r->property_xpad() = GUI_PAD;
-
-    return r;
-}
-
-void FilterBar::Impl::tracker_combo_box_init(Gtk::ComboBox& combo)
-{
-    combo.set_model(tracker_model_);
-    combo.set_row_separator_func(sigc::hide<0>(&Impl::is_it_a_separator));
-    combo.set_active(0);
-
-    {
-        auto* r = Gtk::make_managed<Gtk::CellRendererPixbuf>();
-        combo.pack_start(*r, false);
-        combo.set_cell_data_func(*r, [r](auto const& iter) { render_pixbuf_func(*r, iter); });
-        combo.add_attribute(r->property_pixbuf(), tracker_filter_cols.pixbuf);
-    }
-
-    {
-        auto* r = Gtk::make_managed<Gtk::CellRendererText>();
-        combo.pack_start(*r, false);
-        combo.add_attribute(r->property_text(), tracker_filter_cols.displayname);
-    }
-
-    {
-        auto* r = number_renderer_new();
-        combo.pack_end(*r, true);
-        combo.set_cell_data_func(*r, [r](auto const& iter) { render_number_func(*r, iter); });
-    }
-}
-
-namespace
-{
-
-// --- Show Mode
-
-class ShowModeFilterModelColumns : public Gtk::TreeModelColumnRecord
-{
-public:
-    ShowModeFilterModelColumns() noexcept
-    {
-        add(name);
-        add(count);
-        add(show_mode);
-        add(icon_name);
-    }
-
-    Gtk::TreeModelColumn<Glib::ustring> name;
-    Gtk::TreeModelColumn<int> count;
-    Gtk::TreeModelColumn<ShowMode> show_mode;
-    Gtk::TreeModelColumn<Glib::ustring> icon_name;
-};
-
-ShowModeFilterModelColumns const show_mode_filter_cols;
-
-} // namespace
-
-bool FilterBar::Impl::show_mode_is_it_a_separator(Gtk::TreeModel::const_iterator const& iter)
-{
-    return iter->get_value(show_mode_filter_cols.show_mode) == ShowModeSeparator;
-}
-
-void FilterBar::Impl::status_model_update_count(Gtk::TreeModel::iterator const& iter, int n)
-{
-    if (n != iter->get_value(show_mode_filter_cols.count))
-    {
-        iter->set_value(show_mode_filter_cols.count, n);
-    }
 }
 
 bool FilterBar::Impl::show_mode_filter_model_update()
 {
     auto const torrents_model = core_->get_model();
 
-    for (auto& row : show_mode_model_->children())
+    for (guint pos = 0, n = show_mode_model_->get_n_items(); pos < n; ++pos)
     {
-        auto const type = row.get_value(show_mode_filter_cols.show_mode);
-        if (type == ShowModeSeparator)
+        auto const row = gtr_ptr_dynamic_cast<FilterShowModeRow>(show_mode_model_->get_item(pos));
+        if (row == nullptr || row->is_separator())
         {
             continue;
         }
 
+        auto const type = row->get_show_mode();
         auto hits = 0;
 
         for (auto i = 0U, count = torrents_model->get_n_items(); i < count; ++i)
         {
             auto const torrent = gtr_ptr_dynamic_cast<Torrent>(torrents_model->get_object(i));
-            if (torrent != nullptr && TorrentFilter::match_mode(*torrent, static_cast<ShowMode>(type)))
+            if (torrent != nullptr && TorrentFilter::match_mode(*torrent, type))
             {
                 ++hits;
             }
         }
 
-        status_model_update_count(TR_GTK_TREE_MODEL_CHILD_ITER(row), hits);
+        row->set_count(hits);
     }
 
     return false;
 }
 
-Glib::RefPtr<Gtk::ListStore> FilterBar::Impl::show_mode_filter_model_new()
+Glib::RefPtr<Gio::ListStore<FilterShowModeRow>> FilterBar::Impl::show_mode_filter_model_new()
 {
     struct FilterTypeInfo
     {
@@ -510,55 +565,39 @@ Glib::RefPtr<Gtk::ListStore> FilterBar::Impl::show_mode_filter_model_new()
         { .show_mode = ShowMode::ShowError, .context = nullptr, .name = N_("Error"), .icon_name = "dialog-error" },
     } });
 
-    auto store = Gtk::ListStore::create(show_mode_filter_cols);
+    auto store = Gio::ListStore<FilterShowModeRow>::create();
 
     for (auto const& type : types)
     {
+        if (type.show_mode == ShowModeSeparator)
+        {
+            store->append(FilterShowModeRow::create_separator());
+            continue;
+        }
+
         auto const name = type.name != nullptr ?
             Glib::ustring(type.context != nullptr ? g_dpgettext2(nullptr, type.context, type.name) : _(type.name)) :
             Glib::ustring();
-        auto const iter = store->append();
-        iter->set_value(show_mode_filter_cols.name, name);
-        iter->set_value(show_mode_filter_cols.show_mode, type.show_mode);
-        iter->set_value(show_mode_filter_cols.icon_name, Glib::ustring(type.icon_name != nullptr ? type.icon_name : ""));
+        auto const icon_name = type.icon_name != nullptr ? Glib::ustring(type.icon_name) : Glib::ustring{};
+
+        store->append(FilterShowModeRow::create(name, 0, type.show_mode, icon_name));
     }
 
     return store;
 }
 
-void FilterBar::Impl::render_show_mode_pixbuf_func(
-    Gtk::CellRendererPixbuf& cell_renderer,
-    Gtk::TreeModel::const_iterator const& iter)
+void FilterBar::Impl::show_mode_dropdown_init(Gtk::DropDown& dropdown)
 {
-    auto const type = ShowMode{ iter->get_value(show_mode_filter_cols.show_mode) };
-    cell_renderer.property_width() = type == ShowMode::ShowAll ? 0 : 20;
-    cell_renderer.property_ypad() = type == ShowMode::ShowAll ? 0 : 2;
+    dropdown.set_model(show_mode_model_);
+    dropdown.set_factory(make_show_mode_dropdown_factory());
+    dropdown.set_selected(0);
 }
 
-void FilterBar::Impl::show_mode_combo_box_init(Gtk::ComboBox& combo)
+void FilterBar::Impl::tracker_dropdown_init(Gtk::DropDown& dropdown)
 {
-    combo.set_model(show_mode_model_);
-    combo.set_row_separator_func(sigc::hide<0>(&Impl::show_mode_is_it_a_separator));
-    combo.set_active(0);
-
-    {
-        auto* r = Gtk::make_managed<Gtk::CellRendererPixbuf>();
-        combo.pack_start(*r, false);
-        combo.add_attribute(r->property_icon_name(), show_mode_filter_cols.icon_name);
-        combo.set_cell_data_func(*r, [r](auto const& iter) { render_show_mode_pixbuf_func(*r, iter); });
-    }
-
-    {
-        auto* r = Gtk::make_managed<Gtk::CellRendererText>();
-        combo.pack_start(*r, true);
-        combo.add_attribute(r->property_text(), show_mode_filter_cols.name);
-    }
-
-    {
-        auto* r = number_renderer_new();
-        combo.pack_end(*r, true);
-        combo.set_cell_data_func(*r, [r](auto const& iter) { render_number_func(*r, iter); });
-    }
+    dropdown.set_model(tracker_model_);
+    dropdown.set_factory(make_tracker_dropdown_factory());
+    dropdown.set_selected(0);
 }
 
 void FilterBar::Impl::update_filter_text()
@@ -568,10 +607,9 @@ void FilterBar::Impl::update_filter_text()
 
 void FilterBar::Impl::update_filter_show_mode()
 {
-    /* set active_show_mode_type_ from the show_mode combobox */
-    if (auto const iter = show_mode_->get_active(); iter)
+    if (auto* const row = get_selected_show_mode_row(); row != nullptr && !row->is_separator())
     {
-        filter_->set_mode(ShowMode{ iter->get_value(show_mode_filter_cols.show_mode) });
+        filter_->set_mode(row->get_show_mode());
     }
     else
     {
@@ -581,39 +619,32 @@ void FilterBar::Impl::update_filter_show_mode()
 
 void FilterBar::Impl::update_filter_tracker()
 {
-    /* set the active tracker type & host from the tracker combobox */
-    if (auto const iter = tracker_->get_active(); iter)
+    if (auto* const row = get_selected_tracker_row(); row != nullptr && !row->is_separator())
     {
-        filter_->set_tracker(
-            static_cast<TrackerType>(iter->get_value(tracker_filter_cols.type)),
-            iter->get_value(tracker_filter_cols.sitename));
+        filter_->set_tracker(row->get_type(), row->get_sitename());
     }
     else
     {
-        filter_->set_tracker(TrackerType::ALL, {});
+        filter_->set_tracker(FilterTrackerRow::TrackerType::ALL, {});
     }
 }
 
 bool FilterBar::Impl::update_count_label()
 {
-    /* get the visible count */
     auto const visibleCount = static_cast<int>(filter_model_->get_n_items());
 
-    /* get the tracker count */
     int trackerCount = 0;
-    if (auto const iter = tracker_->get_active(); iter)
+    if (auto* const row = get_selected_tracker_row(); row != nullptr)
     {
-        trackerCount = iter->get_value(tracker_filter_cols.count);
+        trackerCount = row->get_count();
     }
 
-    /* get the mode count */
     int modeCount = 0;
-    if (auto const iter = show_mode_->get_active(); iter)
+    if (auto* const row = get_selected_show_mode_row(); row != nullptr)
     {
-        modeCount = iter->get_value(show_mode_filter_cols.count);
+        modeCount = row->get_count();
     }
 
-    /* set the text */
     if (auto const new_markup = visibleCount == std::min(modeCount, trackerCount) ?
             _("_Show:") :
             fmt::format(fmt::runtime(_("_Show {count:L} of:")), fmt::arg("count", visibleCount));
@@ -671,10 +702,6 @@ void FilterBar::Impl::update_filter_models_idle(Torrent::ChangeFlags changes)
     }
 }
 
-/***
-****
-***/
-
 FilterBarExtraInit::FilterBarExtraInit()
     : ExtraClassInit(&FilterBarExtraInit::class_init, nullptr, &FilterBarExtraInit::instance_init)
 {
@@ -696,10 +723,6 @@ void FilterBarExtraInit::instance_init(GTypeInstance* instance, void* /*klass*/)
 {
     gtk_widget_init_template(GTK_WIDGET(instance));
 }
-
-/***
-****
-***/
 
 FilterBar::FilterBar()
     : Glib::ObjectBase(typeid(FilterBar))
@@ -723,8 +746,8 @@ FilterBar::Impl::Impl(FilterBar& widget, Glib::RefPtr<Session> const& core)
     , core_(core)
     , show_mode_model_(show_mode_filter_model_new())
     , tracker_model_(tracker_filter_model_new())
-    , show_mode_(get_template_child<Gtk::ComboBox>("show_mode_combo"))
-    , tracker_(get_template_child<Gtk::ComboBox>("tracker_combo"))
+    , show_mode_(get_template_child<Gtk::DropDown>("show_mode_combo"))
+    , tracker_(get_template_child<Gtk::DropDown>("tracker_combo"))
     , entry_(get_template_child<Gtk::Entry>("text_entry"))
     , show_lb_(get_template_child<Gtk::Label>("show_label"))
 {
@@ -736,21 +759,17 @@ FilterBar::Impl::Impl(FilterBar& widget, Glib::RefPtr<Session> const& core)
     show_mode_filter_model_update();
     tracker_filter_model_update();
 
-    show_mode_combo_box_init(*show_mode_);
-    tracker_combo_box_init(*tracker_);
+    show_mode_dropdown_init(*show_mode_);
+    tracker_dropdown_init(*tracker_);
 
     filter_->signal_changed().connect([this](auto /*changes*/) { update_count_label_idle(); });
 
     filter_model_ = FilterListModel<Torrent>::create(core_->get_sorted_model(), filter_);
 
-    tracker_->signal_changed().connect(sigc::mem_fun(*this, &Impl::update_filter_tracker));
-    show_mode_->signal_changed().connect(sigc::mem_fun(*this, &Impl::update_filter_show_mode));
+    tracker_->property_selected().signal_changed().connect(sigc::mem_fun(*this, &Impl::update_filter_tracker));
+    show_mode_->property_selected().signal_changed().connect(sigc::mem_fun(*this, &Impl::update_filter_show_mode));
 
-#if GTKMM_CHECK_VERSION(4, 0, 0)
     entry_->signal_icon_release().connect([this](auto /*icon_position*/) { entry_->set_text({}); });
-#else
-    entry_->signal_icon_release().connect([this](auto /*icon_position*/, auto const* /*event*/) { entry_->set_text({}); });
-#endif
     entry_->signal_changed().connect(sigc::mem_fun(*this, &Impl::update_filter_text));
 }
 
@@ -767,7 +786,7 @@ Glib::RefPtr<FilterBar::Model> FilterBar::get_filter_model() const
     return impl_->get_filter_model();
 }
 
-Glib::RefPtr<FilterBar::Impl::FilterModel> FilterBar::Impl::get_filter_model() const
+Glib::RefPtr<Gtk::FilterListModel> FilterBar::Impl::get_filter_model() const
 {
     return filter_model_;
 }

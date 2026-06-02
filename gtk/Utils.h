@@ -15,16 +15,13 @@
 #include <glibmm/signalproxy.h>
 #include <glibmm/ustring.h>
 #include <gtkmm/builder.h>
-#include <gtkmm/combobox.h>
+#include <gtkmm/columnview.h>
+#include <gtkmm/dropdown.h>
 #include <gtkmm/entry.h>
 #include <gtkmm/label.h>
-#include <gtkmm/treeview.h>
+#include <gtkmm/listview.h>
 #include <gtkmm/widget.h>
 #include <gtkmm/window.h>
-
-#if GTKMM_CHECK_VERSION(4, 0, 0)
-#include <gtkmm/listview.h>
-#endif
 
 #include <fmt/format.h>
 
@@ -115,11 +112,22 @@ void gtr_window_raise(Gtk::Window& window);
 ****
 ***/
 
-void gtr_priority_combo_init(Gtk::ComboBox& combo);
+void gtr_priority_combo_init(Gtk::DropDown& dropdown);
 
-void gtr_combo_box_set_enum(Gtk::ComboBox& combo, std::vector<std::pair<Glib::ustring, int>> const& items);
-int gtr_combo_box_get_active_enum(Gtk::ComboBox const& combo);
-void gtr_combo_box_set_active_enum(Gtk::ComboBox& combo, int value);
+void gtr_combo_box_set_enum(Gtk::DropDown& dropdown, std::vector<std::pair<Glib::ustring, int>> const& items);
+[[nodiscard]] int gtr_combo_box_get_active_enum(Gtk::DropDown const& dropdown);
+void gtr_combo_box_set_active_enum(Gtk::DropDown& dropdown, int value);
+
+void gtr_window_present(Gtk::Window& window);
+
+void gtr_alert_error(Gtk::Window& parent, Glib::ustring const& message, Glib::ustring const& detail = {});
+
+void gtr_alert_confirm(
+    Gtk::Window& parent,
+    Glib::ustring const& message,
+    Glib::ustring const& detail,
+    Glib::ustring const& accept_label,
+    std::function<void(bool accepted)> callback);
 
 /***
 ****
@@ -132,38 +140,35 @@ void gtr_add_torrent_error_dialog(Gtk::Widget& window_or_child, tr_torrent* dupl
 /* pop up the context menu if a user right-clicks.
    if the row they right-click on isn't selected, select it. */
 bool on_item_view_button_pressed(
-    Gtk::TreeView& view,
-    double event_x,
-    double event_y,
-    bool context_menu_requested,
-    std::function<void(double, double)> const& callback = {});
-#if GTKMM_CHECK_VERSION(4, 0, 0)
-bool on_item_view_button_pressed(
     Gtk::ListView& view,
     double event_x,
     double event_y,
     bool context_menu_requested,
     std::function<void(double, double)> const& callback = {});
-#endif
+
+bool on_item_view_button_pressed(
+    Gtk::ColumnView& view,
+    double event_x,
+    double event_y,
+    bool context_menu_requested,
+    std::function<void(double, double)> const& callback = {});
 
 /* if the click didn't specify a row, clear the selection */
-bool on_item_view_button_released(Gtk::TreeView& view, double event_x, double event_y);
-#if GTKMM_CHECK_VERSION(4, 0, 0)
 bool on_item_view_button_released(Gtk::ListView& view, double event_x, double event_y);
-#endif
 
-using TrGdkModifierType = IF_GTKMM4(Gdk::ModifierType, guint);
+bool on_item_view_button_released(Gtk::ColumnView& view, double event_x, double event_y);
 
-void setup_item_view_button_event_handling(
-    Gtk::TreeView& view,
-    std::function<bool(guint, TrGdkModifierType, double, double, bool)> const& press_callback,
-    std::function<bool(double, double)> const& release_callback);
-#if GTKMM_CHECK_VERSION(4, 0, 0)
+using TrGdkModifierType = Gdk::ModifierType;
+
 void setup_item_view_button_event_handling(
     Gtk::ListView& view,
     std::function<bool(guint, TrGdkModifierType, double, double, bool)> const& press_callback,
     std::function<bool(double, double)> const& release_callback);
-#endif
+
+void setup_item_view_button_event_handling(
+    Gtk::ColumnView& view,
+    std::function<bool(guint, TrGdkModifierType, double, double, bool)> const& press_callback,
+    std::function<bool(double, double)> const& release_callback);
 
 /* move a file to the trashcan if GIO is available; otherwise, delete it */
 bool gtr_file_trash_or_remove(std::string_view filename, tr_error* error = nullptr);

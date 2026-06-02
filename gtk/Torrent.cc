@@ -31,12 +31,6 @@ using namespace tr::Values;
 namespace
 {
 
-template<typename T>
-Glib::Value<T>& column_value_cast(Glib::ValueBase& value, Gtk::TreeModelColumn<T> const& /*column*/)
-{
-    return static_cast<Glib::Value<T>&>(value);
-}
-
 template<typename T, typename U>
 void update_cache_value(T& value, U&& new_value, Torrent::ChangeFlags& changes, Torrent::ChangeFlag flag)
 {
@@ -105,12 +99,6 @@ std::string_view get_activity_direction(tr_torrent_activity activity)
 }
 
 } // namespace
-
-Torrent::Columns::Columns()
-{
-    add(self);
-    add(name_collated);
-}
 
 class Torrent::Impl
 {
@@ -424,26 +412,7 @@ void Torrent::Impl::notify_property_changes(ChangeFlags changes) const
         }
     }
 
-#else
-
-    // Reduce redraws by emitting non-detailed signal once for all changes
-    gtr_object_notify_emit(torrent_);
-
 #endif
-}
-
-void Torrent::Impl::get_value(int column, Glib::ValueBase& value) const
-{
-    static auto const& columns = get_columns();
-
-    if (column == columns.self.index())
-    {
-        column_value_cast(value, columns.self).set(&torrent_);
-    }
-    else if (column == columns.name_collated.index())
-    {
-        column_value_cast(value, columns.name_collated).set(cache_.name_collated);
-    }
 }
 
 Glib::RefPtr<Gio::Icon> Torrent::Impl::get_icon() const
@@ -868,7 +837,11 @@ void Torrent::Impl::apply_rpc_snapshot(TorrentRpcSnapshot const& snapshot, Chang
     update_cache_value(cache_.percent_complete, percent_complete, result, ChangeFlag::PERCENT_COMPLETE);
     update_cache_value(cache_.activity_percent_done, percent_done, result, ChangeFlag::PERCENT_DONE);
     update_cache_value(cache_.finished, snapshot.finished, result, ChangeFlag::FINISHED);
-    update_cache_value(cache_.error_code, snapshot.error_code, result, ChangeFlag::ERROR_CODE);
+    update_cache_value(
+        cache_.error_code,
+        static_cast<tr_stat::Error>(snapshot.error_code),
+        result,
+        ChangeFlag::ERROR_CODE);
     auto const new_error_message = Glib::ustring{ snapshot.error_message };
     if (cache_.error_message.raw() != new_error_message.raw())
     {
@@ -1103,30 +1076,6 @@ Glib::RefPtr<Torrent> Torrent::create(tr_torrent* torrent)
 {
     // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
     return Glib::make_refptr_for_instance(new Torrent(torrent));
-}
-
-Torrent::Columns const& Torrent::get_columns()
-{
-    static Columns const columns;
-    return columns;
-}
-
-int Torrent::get_item_id(Glib::RefPtr<Glib::ObjectBase const> const& item)
-{
-    if (auto const torrent = gtr_ptr_dynamic_cast<Torrent const>(item); torrent != nullptr)
-    {
-        return torrent->get_id();
-    }
-
-    return 0;
-}
-
-void Torrent::get_item_value(Glib::RefPtr<Glib::ObjectBase const> const& item, int column, Glib::ValueBase& value)
-{
-    if (auto const torrent = gtr_ptr_dynamic_cast<Torrent const>(item); torrent != nullptr)
-    {
-        torrent->impl_->get_value(column, value);
-    }
 }
 
 int Torrent::compare_by_id(Glib::RefPtr<Torrent const> const& lhs, Glib::RefPtr<Torrent const> const& rhs)

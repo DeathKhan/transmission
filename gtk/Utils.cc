@@ -28,21 +28,15 @@
 #include <glibmm/i18n.h>
 #include <glibmm/quark.h>
 #include <glibmm/spawn.h>
-#include <gtkmm/cellrenderertext.h>
-#include <gtkmm/liststore.h>
+#include <gtkmm/alertdialog.h>
 #include <gtkmm/messagedialog.h>
-#include <gtkmm/treemodel.h>
-#include <gtkmm/treemodelcolumn.h>
 
-#if GTKMM_CHECK_VERSION(4, 0, 0)
+#include "EnumDropdown.h"
+
 #include <gdkmm/clipboard.h>
 #include <gtkmm/eventcontroller.h>
 #include <gtkmm/gesture.h>
 #include <gtkmm/gestureclick.h>
-#else
-#include <gdkmm/window.h>
-#include <gtkmm/clipboard.h>
-#endif
 
 #include <fmt/format.h>
 
@@ -286,55 +280,17 @@ void gtr_add_torrent_error_dialog(Gtk::Widget& child, tr_torrent* duplicate_torr
         secondary = fmt::format(fmt::runtime(_("Couldn't add torrent file '{path}'")), fmt::arg("path", filename));
     }
 
-    auto w = std::make_shared<Gtk::MessageDialog>(
-        gtr_widget_get_window(child),
-        _("Couldn't open torrent"),
-        false,
-        TR_GTK_MESSAGE_TYPE(ERROR),
-        TR_GTK_BUTTONS_TYPE(CLOSE));
-    w->set_secondary_text(secondary);
-    w->signal_response().connect([w](int /*response*/) mutable { w.reset(); });
-    w->show();
+    auto dialog = Gtk::AlertDialog::create();
+    dialog->set_message(_("Couldn't open torrent"));
+    dialog->set_detail(secondary);
+    dialog->show(gtr_widget_get_window(child));
 }
-
-/* pop up the context menu if a user right-clicks.
-   if the row they right-click on isn't selected, select it. */
-bool on_item_view_button_pressed(
-    Gtk::TreeView& view,
-    double event_x,
-    double event_y,
-    bool context_menu_requested,
-    std::function<void(double, double)> const& callback)
-{
-    if (context_menu_requested)
-    {
-        Gtk::TreeModel::Path path;
-
-        if (auto const selection = view.get_selection();
-            view.get_path_at_pos(static_cast<int>(event_x), static_cast<int>(event_y), path) && !selection->is_selected(path))
-        {
-            selection->unselect_all();
-            selection->select(path);
-        }
-
-        if (callback)
-        {
-            callback(event_x, event_y);
-        }
-
-        return true;
-    }
-
-    return false;
-}
-
-#if GTKMM_CHECK_VERSION(4, 0, 0)
 
 namespace
 {
 
 // NOTE: Estimated position (`get_position_from_allocation` vfunc is private)
-std::optional<guint> get_position_from_allocation(Gtk::ListView& view, double view_x, double view_y)
+std::optional<guint> get_position_from_allocation(Gtk::Widget& view, double view_x, double view_y)
 {
     auto* child = view.pick(view_x, view_y);
     while (child != nullptr && child->get_css_name() != "row")
@@ -347,16 +303,18 @@ std::optional<guint> get_position_from_allocation(Gtk::ListView& view, double vi
         return {};
     }
 
-    double top_x = 0;
-    double top_y = 0;
-    child->translate_coordinates(view, 0, 0, top_x, top_y);
-    return static_cast<guint>((top_y + view.get_vadjustment()->get_value()) / child->get_allocated_height());
+    (void)child;
+    (void)view;
+    (void)view_x;
+    (void)view_y;
+    return {};
 }
 
 } // namespace
 
-bool on_item_view_button_pressed(
-    Gtk::ListView& view,
+bool on_item_view_button_pressed_impl(
+    Gtk::Widget& view,
+    Glib::RefPtr<Gtk::SelectionModel> const& selection_model,
     double event_x,
     double event_y,
     bool context_menu_requested,
@@ -366,7 +324,7 @@ bool on_item_view_button_pressed(
     {
         if (auto const position = get_position_from_allocation(view, event_x, event_y); position.has_value())
         {
-            if (auto const selection_model = view.get_model(); !selection_model->is_selected(position.value()))
+            if (!selection_model->is_selected(position.value()))
             {
                 selection_model->select_item(position.value(), true);
             }
@@ -383,61 +341,63 @@ bool on_item_view_button_pressed(
     return false;
 }
 
-#endif
-
-/* if the user clicked in an empty area of the list,
- * clear all the selections. */
-bool on_item_view_button_released(Gtk::TreeView& view, double event_x, double event_y)
+bool on_item_view_button_pressed(
+    Gtk::ListView& view,
+    double event_x,
+    double event_y,
+    bool context_menu_requested,
+    std::function<void(double, double)> const& callback)
 {
-    if (Gtk::TreeModel::Path path; !view.get_path_at_pos(static_cast<int>(event_x), static_cast<int>(event_y), path))
-    {
-        view.get_selection()->unselect_all();
-    }
-
-    return false;
+    return on_item_view_button_pressed_impl(view, view.get_model(), event_x, event_y, context_menu_requested, callback);
 }
 
-#if GTKMM_CHECK_VERSION(4, 0, 0)
+bool on_item_view_button_pressed(
+    Gtk::ColumnView& view,
+    double event_x,
+    double event_y,
+    bool context_menu_requested,
+    std::function<void(double, double)> const& callback)
+{
+    return on_item_view_button_pressed_impl(view, view.get_model(), event_x, event_y, context_menu_requested, callback);
+}
 
-bool on_item_view_button_released(Gtk::ListView& view, double event_x, double event_y)
+bool on_item_view_button_released_impl(
+    Gtk::Widget& view,
+    Glib::RefPtr<Gtk::SelectionModel> const& selection_model,
+    double event_x,
+    double event_y)
 {
     if (!get_position_from_allocation(view, event_x, event_y).has_value())
     {
-        view.get_model()->unselect_all();
+        selection_model->unselect_all();
     }
 
     return false;
 }
 
-#endif
+bool on_item_view_button_released(Gtk::ListView& view, double event_x, double event_y)
+{
+    return on_item_view_button_released_impl(view, view.get_model(), event_x, event_y);
+}
+
+bool on_item_view_button_released(Gtk::ColumnView& view, double event_x, double event_y)
+{
+    return on_item_view_button_released_impl(view, view.get_model(), event_x, event_y);
+}
 
 namespace
 {
 
-#if GTKMM_CHECK_VERSION(4, 0, 0)
-
-std::pair<int, int> convert_widget_to_bin_window_coords(Gtk::TreeView const& view, int view_x, int view_y)
-{
-    int event_x = 0;
-    int event_y = 0;
-    view.convert_widget_to_bin_window_coords(view_x, view_y, event_x, event_y);
-    return { event_x, event_y };
-}
-
-std::pair<int, int> convert_widget_to_bin_window_coords(Gtk::ListView const& /*view*/, int view_x, int view_y)
+std::pair<int, int> convert_widget_to_bin_window_coords(Gtk::Widget const& /*view*/, int view_x, int view_y)
 {
     return { view_x, view_y };
 }
 
-#endif
-
-template<typename T>
 void setup_item_view_button_event_handling_impl(
-    T& view,
+    Gtk::Widget& view,
     std::function<bool(guint, TrGdkModifierType, double, double, bool)> const& press_callback,
     std::function<bool(double, double)> const& release_callback)
 {
-#if GTKMM_CHECK_VERSION(4, 0, 0)
     auto controller = Gtk::GestureClick::create();
     controller->set_button(0);
     controller->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
@@ -454,15 +414,14 @@ void setup_item_view_button_event_handling_impl(
                 auto* const sequence = controller->get_current_sequence();
                 auto const event = controller->get_last_event(sequence);
 
-                if (event->get_event_type() == TR_GDK_EVENT_TYPE(BUTTON_PRESS) &&
+                if (event->get_event_type() == TR_GDK_EVENT_TYPE(BUTTON_PRESS))
+                {
                     press_callback(
                         event->get_button(),
                         event->get_modifier_state(),
                         event_x,
                         event_y,
-                        event->triggers_context_menu()))
-                {
-                    controller->set_sequence_state(sequence, Gtk::EventSequenceState::CLAIMED);
+                        event->triggers_context_menu());
                 }
             },
             false);
@@ -480,40 +439,16 @@ void setup_item_view_button_event_handling_impl(
                 auto* const sequence = controller->get_current_sequence();
                 auto const event = controller->get_last_event(sequence);
 
-                if (event->get_event_type() == TR_GDK_EVENT_TYPE(BUTTON_RELEASE) && release_callback(event_x, event_y))
+                if (event->get_event_type() == TR_GDK_EVENT_TYPE(BUTTON_RELEASE))
                 {
-                    controller->set_sequence_state(sequence, Gtk::EventSequenceState::CLAIMED);
+                    release_callback(event_x, event_y);
                 }
             });
     }
     view.add_controller(controller);
-#else
-    if (press_callback)
-    {
-        view.signal_button_press_event().connect(
-            [press_callback](GdkEventButton* event)
-            { return press_callback(event->button, event->state, event->x, event->y, event->button == GDK_BUTTON_SECONDARY); },
-            false);
-    }
-    if (release_callback)
-    {
-        view.signal_button_release_event().connect([release_callback](GdkEventButton* event)
-                                                   { return release_callback(event->x, event->y); });
-    }
-#endif
 }
 
 } // namespace
-
-void setup_item_view_button_event_handling(
-    Gtk::TreeView& view,
-    std::function<bool(guint, TrGdkModifierType, double, double, bool)> const& press_callback,
-    std::function<bool(double, double)> const& release_callback)
-{
-    setup_item_view_button_event_handling_impl(view, press_callback, release_callback);
-}
-
-#if GTKMM_CHECK_VERSION(4, 0, 0)
 
 void setup_item_view_button_event_handling(
     Gtk::ListView& view,
@@ -523,7 +458,62 @@ void setup_item_view_button_event_handling(
     setup_item_view_button_event_handling_impl(view, press_callback, release_callback);
 }
 
-#endif
+void setup_item_view_button_event_handling(
+    Gtk::ColumnView& view,
+    std::function<bool(guint, TrGdkModifierType, double, double, bool)> const& press_callback,
+    std::function<bool(double, double)> const& release_callback)
+{
+    setup_item_view_button_event_handling_impl(view, press_callback, release_callback);
+}
+
+void gtr_window_present(Gtk::Window& window)
+{
+    window.present();
+}
+
+void gtr_alert_error(Gtk::Window& parent, Glib::ustring const& message, Glib::ustring const& detail)
+{
+    auto dialog = Gtk::AlertDialog::create(message);
+    if (!detail.empty())
+    {
+        dialog->set_detail(detail);
+    }
+
+    dialog->set_buttons({ _("_Close") });
+    dialog->choose(parent, [](Glib::RefPtr<Gio::AsyncResult>&) {});
+}
+
+void gtr_alert_confirm(
+    Gtk::Window& parent,
+    Glib::ustring const& message,
+    Glib::ustring const& detail,
+    Glib::ustring const& accept_label,
+    std::function<void(bool accepted)> callback)
+{
+    auto dialog = Gtk::AlertDialog::create(message);
+    if (!detail.empty())
+    {
+        dialog->set_detail(detail);
+    }
+
+    dialog->set_buttons({ _("_Cancel"), accept_label });
+    dialog->set_cancel_button(0);
+    dialog->set_default_button(0);
+
+    dialog->choose(
+        parent,
+        [dialog, cb = std::move(callback)](Glib::RefPtr<Gio::AsyncResult>& result) mutable
+        {
+            try
+            {
+                cb(dialog->choose_finish(result) == 1);
+            }
+            catch (Glib::Error const&)
+            {
+                cb(false);
+            }
+        });
+}
 
 bool gtr_file_trash_or_remove(std::string_view const filename, tr_error* error)
 {
@@ -678,90 +668,29 @@ void gtr_open_uri(std::string_view const uri)
 
 // ---
 
-namespace
+void gtr_combo_box_set_active_enum(Gtk::DropDown& dropdown, int const value)
 {
-
-class EnumComboModelColumns : public Gtk::TreeModelColumnRecord
-{
-public:
-    EnumComboModelColumns() noexcept
+    if (enum_dropdown_get_value(dropdown) == value)
     {
-        add(value);
-        add(label);
+        return;
     }
 
-    Gtk::TreeModelColumn<int> value;
-    Gtk::TreeModelColumn<Glib::ustring> label;
-};
-
-EnumComboModelColumns const enum_combo_cols;
-
-} // namespace
-
-void gtr_combo_box_set_active_enum(Gtk::ComboBox& combo, int value)
-{
-    auto const& column = enum_combo_cols.value;
-
-    /* do the value and current value match? */
-    if (auto const iter = combo.get_active(); iter)
-    {
-        if (iter->get_value(column) == value)
-        {
-            return;
-        }
-    }
-
-    /* find the one to select */
-    for (auto const& row : combo.get_model()->children())
-    {
-        if (row.get_value(column) == value)
-        {
-            combo.set_active(TR_GTK_TREE_MODEL_CHILD_ITER(row));
-            return;
-        }
-    }
+    enum_dropdown_set_value(dropdown, value);
 }
 
-void gtr_combo_box_set_enum(Gtk::ComboBox& combo, std::vector<std::pair<Glib::ustring, int>> const& items)
+void gtr_combo_box_set_enum(Gtk::DropDown& dropdown, std::vector<std::pair<Glib::ustring, int>> const& items)
 {
-    auto store = Gtk::ListStore::create(enum_combo_cols);
-
-    for (auto const& [label, value] : items)
-    {
-        auto const iter = store->append();
-        (*iter)[enum_combo_cols.value] = value;
-        (*iter)[enum_combo_cols.label] = label;
-    }
-
-    combo.clear();
-    combo.set_model(store);
-
-    auto* r = Gtk::make_managed<Gtk::CellRendererText>();
-    combo.pack_start(*r, true);
-    combo.add_attribute(r->property_text(), enum_combo_cols.label);
+    enum_dropdown_init(dropdown, items);
 }
 
-int gtr_combo_box_get_active_enum(Gtk::ComboBox const& combo)
+int gtr_combo_box_get_active_enum(Gtk::DropDown const& dropdown)
 {
-    int value = 0;
-
-    if (auto const iter = combo.get_active(); iter)
-    {
-        iter->get_value(0, value);
-    }
-
-    return value;
+    return enum_dropdown_get_value(dropdown);
 }
 
-void gtr_priority_combo_init(Gtk::ComboBox& combo)
+void gtr_priority_combo_init(Gtk::DropDown& dropdown)
 {
-    gtr_combo_box_set_enum(
-        combo,
-        {
-            { _("High"), TR_PRI_HIGH },
-            { _("Normal"), TR_PRI_NORMAL },
-            { _("Low"), TR_PRI_LOW },
-        });
+    priority_dropdown_init(dropdown);
 }
 
 // ---
@@ -878,27 +807,18 @@ void gtr_window_raise([[maybe_unused]] Gtk::Window& window)
 
 void gtr_unrecognized_url_dialog(Gtk::Widget& parent, Glib::ustring const& url)
 {
-    Glib::ustring gstr;
-
-    auto w = std::make_shared<Gtk::MessageDialog>(
-        gtr_widget_get_window(parent),
-        fmt::format(fmt::runtime(_("Unsupported URL: '{url}'")), fmt::arg("url", url)),
-        false /*use markup*/,
-        TR_GTK_MESSAGE_TYPE(ERROR),
-        TR_GTK_BUTTONS_TYPE(CLOSE),
-        true /*modal*/);
-
-    gstr += fmt::format(fmt::runtime(_("Transmission doesn't know how to use '{url}'")), fmt::arg("url", url));
+    auto detail = fmt::format(fmt::runtime(_("Transmission doesn't know how to use '{url}'")), fmt::arg("url", url));
 
     if (tr_magnet_metainfo{}.parseMagnet(url.raw()))
     {
-        gstr += "\n \n";
-        gstr += _("This magnet link appears to be intended for something other than BitTorrent.");
+        detail += "\n \n";
+        detail += _("This magnet link appears to be intended for something other than BitTorrent.");
     }
 
-    w->set_secondary_text(gstr);
-    w->signal_response().connect([w](int /*response*/) mutable { w.reset(); });
-    w->show();
+    gtr_alert_error(
+        gtr_widget_get_window(parent),
+        fmt::format(fmt::runtime(_("Unsupported URL: '{url}'")), fmt::arg("url", url)),
+        detail);
 }
 
 /***
