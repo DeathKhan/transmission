@@ -1,12 +1,13 @@
 # Maintainer: James <jfoh96@gmail.com>
-# Upstream: https://github.com/DeathKhan/transmission-client-gtk
+# Fork: https://github.com/DeathKhan/transmission (branch transmission-client-gtk)
+# Upstream: https://github.com/transmission/transmission
 
 pkgname=transmission-client-gtk
-pkgver=4.1.1.r2.gdd3746c
+pkgver=4.1.1.r3.gd175c88
 pkgrel=1
 pkgdesc='GTK client for an existing Transmission daemon (remote RPC; fork of transmission-gtk)'
 arch=('x86_64')
-url='https://github.com/DeathKhan/transmission-client-gtk'
+url='https://github.com/DeathKhan/transmission/tree/transmission-client-gtk'
 license=('GPL-2.0-or-later')
 depends=(
   curl
@@ -31,22 +32,22 @@ optdepends=(
   'libnotify: desktop notifications'
   'transmission-cli: transmission-daemon and web UI for torrents managed remotely'
 )
-source=("git+https://github.com/DeathKhan/transmission-client-gtk.git#commit=dd3746c7cb422e53d3c3faae35edc6022945cdb3")
+source=("git+https://github.com/DeathKhan/transmission.git#branch=transmission-client-gtk")
 sha256sums=('SKIP')
 options=('!lto') # upstream + fat LTO objects are fragile; keep build reliable
 
 pkgver() {
-  cd "$pkgname"
+  cd transmission
   printf '4.1.1.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
 }
 
 prepare() {
-  cd "$pkgname"
+  cd transmission
   git submodule update --init --recursive
 }
 
 build() {
-  cd "$pkgname"
+  cd transmission
 
   export CFLAGS+=' -ffat-lto-objects'
 
@@ -78,14 +79,13 @@ build() {
 }
 
 package() {
-  cd "$pkgname/build"
+  cd transmission/build
 
   DESTDIR="$pkgdir" ninja gtk/install
 
-  install -Dm644 "$srcdir/$pkgname/COPYING" \
+  install -Dm644 "$srcdir/transmission/COPYING" \
     "$pkgdir/usr/share/licenses/$pkgname/COPYING"
 
-  # Upstream man page still named transmission-gtk.1
-  install -Dm644 "$srcdir/$pkgname/gtk/transmission-gtk.1" \
+  install -Dm644 "$srcdir/transmission/gtk/transmission-gtk.1" \
     "$pkgdir/usr/share/man/man1/$pkgname.1"
 }

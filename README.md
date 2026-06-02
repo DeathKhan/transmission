@@ -1,6 +1,10 @@
 # transmission-client-gtk
 
-A fork of [Transmission](https://github.com/transmission/transmission) focused on one goal: **the GTK client can act as a remote control for an existing `transmission-daemon`**, the way `transmission-qt` already does.
+This repository is a **GitHub fork** of [transmission/transmission](https://github.com/transmission/transmission). All custom work lives on the **`transmission-client-gtk`** branch (not `main`).
+
+**Fork:** https://github.com/DeathKhan/transmission/tree/transmission-client-gtk
+
+The goal: **the GTK client can act as a remote control for an existing `transmission-daemon`**, the way `transmission-qt` already does.
 
 Upstream `transmission-gtk` always embeds its own BitTorrent session. This build adds a full HTTP RPC path so you can manage the **same daemon** that Sonarr, scripts, or systemd already use—without switching to Qt or a separate remote-only app.
 
@@ -52,6 +56,8 @@ yay -S transmission-client-gtk   # after the package is on AUR
 
 ## Upstream
 
-Based on Transmission at `56442e2`. Licensed under the same terms as upstream (GPL). Not affiliated with the Transmission project.
+Track [transmission/transmission](https://github.com/transmission/transmission) `main` in this fork; merge or rebase periodically, then refresh the `transmission-client-gtk` branch.
 
-For stock Transmission docs, building all targets, and contributing upstream, see [transmission/transmission](https://github.com/transmission/transmission) and `docs/`.
+Licensed under the same terms as upstream (GPL). Not affiliated with the Transmission project.
+
+For stock Transmission docs, building all targets, and contributing upstream, see the [upstream repo](https://github.com/transmission/transmission) and `docs/`.

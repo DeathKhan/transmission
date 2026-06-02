@@ -69,7 +69,9 @@ Install or run from `build/gtk/transmission-client-gtk`.
 
 ### Arch Linux (AUR)
 
-Packaging: [packaging/aur/](../packaging/aur/) in this repository (publish to AUR once; then `yay -S transmission-client-gtk`). After it is on AUR:
+Build from the **`transmission-client-gtk`** branch of [DeathKhan/transmission](https://github.com/DeathKhan/transmission) (fork of [transmission/transmission](https://github.com/transmission/transmission)).
+
+Packaging: [packaging/aur/](../packaging/aur/) (AUR: `yay -S transmission-client-gtk` once published). After it is on AUR:
 
 ```bash
 yay -S transmission-client-gtk
