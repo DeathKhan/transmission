@@ -42,6 +42,14 @@ Upstream `transmission-gtk` always embeds its own BitTorrent session. This build
 
 4. Launch `transmission-client-gtk` — torrents and paths should match the daemon, not a stray local session.
 
+## Arch Linux (AUR)
+
+PKGBUILD and publish steps: [packaging/aur/](packaging/aur/).
+
+```bash
+yay -S transmission-client-gtk   # after the package is on AUR
+```
+
 ## Upstream
 
 Based on Transmission at `56442e2`. Licensed under the same terms as upstream (GPL). Not affiliated with the Transmission project.

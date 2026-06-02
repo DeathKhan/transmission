@@ -67,6 +67,14 @@ cmake --build build --target transmission-client-gtk
 
 Install or run from `build/gtk/transmission-client-gtk`.
 
+### Arch Linux (AUR)
+
+Packaging: [packaging/aur/](../packaging/aur/) in this repository (publish to AUR once; then `yay -S transmission-client-gtk`). After it is on AUR:
+
+```bash
+yay -S transmission-client-gtk
+```
+
 ## Feature status
 
 - [x] Rebrand binary and config dir
